@@ -6,7 +6,6 @@ const http = require("http");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
 const { Server } = require("socket.io");
 const {
   randomUUID,
@@ -44,60 +43,58 @@ pool.on("error", err => {
   console.error("PostgreSQL connection error:", err.message);
 });
 
-// Gmail SMTP
-function getMailer() {
-  const user = process.env.MAIL_USER;
-  const password = (process.env.MAIL_APP_PASSWORD || "")
-    .replace(/\s/g, "");
+// Resend HTTPS API
+async function sendVerificationEmail(email, code) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.MAIL_FROM || "NOLINK <onboarding@resend.dev>";
 
-  if (!user || !password) {
-    throw new Error("Настройки Gmail не добавлены на сервере");
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY не добавлен на сервере");
   }
 
-  return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: {
-      user,
-      pass: password
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
     },
-    connectionTimeout: 20000,
-    greetingTimeout: 20000,
-    socketTimeout: 20000
-  });
-}
-
-async function sendVerificationEmail(email, code) {
-  const mailer = getMailer();
-
-  const from = process.env.MAIL_FROM || process.env.MAIL_USER;
-
-  await mailer.sendMail({
-    from: `NOLINK <${from}>`,
-    to: email,
-    subject: "Код подтверждения NOLINK",
-    text:
-      `Добро пожаловать в NOLINK!\n\n` +
-      `Твой код подтверждения: ${code}\n\n` +
-      `Код действует ${CODE_LIFETIME_MINUTES} минут.\n` +
-      `Если ты не регистрировался в NOLINK, просто проигнорируй это письмо.`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#222">
-        <h1 style="color:#5865f2">NOLINK</h1>
-        <h2>Подтверждение электронной почты</h2>
-        <p>Добро пожаловать в NOLINK!</p>
-        <p>Твой код подтверждения:</p>
-        <div style="font-size:32px;font-weight:bold;letter-spacing:8px;padding:16px 0">
-          ${code}
+    body: JSON.stringify({
+      from,
+      to: [email],
+      subject: "Код подтверждения NOLINK",
+      text:
+        `Добро пожаловать в NOLINK!\n\n` +
+        `Твой код подтверждения: ${code}\n\n` +
+        `Код действует ${CODE_LIFETIME_MINUTES} минут.\n` +
+        `Если ты не регистрировался в NOLINK, просто проигнорируй это письмо.`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#222">
+          <h1 style="color:#5865f2">NOLINK</h1>
+          <h2>Подтверждение электронной почты</h2>
+          <p>Добро пожаловать в NOLINK!</p>
+          <p>Твой код подтверждения:</p>
+          <div style="font-size:32px;font-weight:bold;letter-spacing:8px;padding:16px 0">
+            ${code}
+          </div>
+          <p>Код действует ${CODE_LIFETIME_MINUTES} минут.</p>
+          <p style="color:#777;font-size:12px">
+            Если ты не регистрировался в NOLINK, проигнорируй это письмо.
+          </p>
         </div>
-        <p>Код действует ${CODE_LIFETIME_MINUTES} минут.</p>
-        <p style="color:#777;font-size:12px">
-          Если ты не регистрировался в NOLINK, проигнорируй это письмо.
-        </p>
-      </div>
-    `
+      `
+    })
   });
+
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    console.error("Resend API error:", result);
+    throw new Error(
+      result.message || result.error || `Resend API error: ${response.status}`
+    );
+  }
+
+  console.log("Verification email accepted by Resend:", result.id);
 }
 
 function makeCodeHash(email, code) {
@@ -453,7 +450,7 @@ app.post("/api/auth/register", async (req, res) => {
       console.error("Email sending error:", mailError.message);
 
       return res.status(503).json({
-        error: "Не удалось отправить письмо. Проверь настройки Gmail на сервере."
+        error: "Не удалось отправить письмо. Проверь настройки Resend на сервере."
       });
     }
 
