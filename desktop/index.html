@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src http: https: ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NOLINK</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="auth" class="auth-wrap">
+    <div class="auth-card">
+      <div class="brand-mark">N</div>
+      <div class="brand">NOLINK</div>
+      <div class="tagline">YOUR SPACE. YOUR MESSAGES.</div>
+      <h2 id="auth-title">С возвращением</h2>
+      <p class="muted">Войди или создай аккаунт, чтобы начать общаться.</p>
+      <form id="auth-form">
+        <label id="username-label" class="hidden">Имя пользователя</label>
+        <input id="username" class="hidden" autocomplete="username" placeholder="Например, alex">
+        <label>Электронная почта</label>
+        <input id="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+        <label>Пароль</label>
+        <input id="password" type="password" autocomplete="current-password" placeholder="Не менее 8 символов" required>
+        <button class="primary full" type="submit" id="auth-submit">Войти</button>
+      </form>
+      <div id="auth-error" class="error"></div>
+      <button class="link-btn" id="auth-switch">Нет аккаунта? Зарегистрироваться</button>
+      <div class="server-config">
+        <label>Адрес сервера</label>
+        <input id="server-url" placeholder="http://localhost:3030">
+        <small>Для общения через интернет укажи адрес общего сервера NOLINK.</small>
+      </div>
+    </div>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="side-head">
+        <div class="mini-logo">N</div><span>NOLINK</span>
+        <button id="new-chat" class="icon-btn" title="Новый чат">＋</button>
+      </div>
+      <div class="search-wrap"><input id="search" placeholder="Поиск чатов"></div>
+      <div class="section-label">СООБЩЕНИЯ</div>
+      <div id="chat-list" class="chat-list"></div>
+      <div class="profile">
+        <div class="avatar" id="my-avatar">N</div>
+        <div class="profile-info"><b id="my-name">Пользователь</b><small>В сети</small></div>
+        <button id="logout" class="icon-btn" title="Выйти">↪</button>
+      </div>
+    </aside>
+    <main class="main">
+      <div id="empty-state" class="empty-state">
+        <div class="empty-logo">N</div>
+        <h1>Добро пожаловать в NOLINK</h1>
+        <p>Выбери чат слева или начни новую переписку.</p>
+        <button class="primary" id="empty-new">＋ Новый чат</button>
+      </div>
+      <section id="conversation" class="conversation hidden">
+        <header class="chat-header">
+          <div class="avatar" id="chat-avatar">C</div>
+          <div><b id="chat-title">Чат</b><small id="chat-subtitle">NOLINK</small></div>
+        </header>
+        <div id="messages" class="messages"></div>
+        <form id="send-form" class="composer">
+          <input id="message-input" maxlength="4000" placeholder="Написать сообщение..." autocomplete="off">
+          <button class="send-btn" type="submit">➤</button>
+        </form>
+      </section>
+    </main>
+  </div>
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <button id="modal-close" class="modal-close">×</button>
+      <h2>Новый чат</h2>
+      <p class="muted">Найди пользователя по имени или создай группу.</p>
+      <div class="tabs"><button class="tab active" data-tab="direct">Личный чат</button><button class="tab" data-tab="group">Группа</button></div>
+      <div id="direct-panel">
+        <input id="user-search" placeholder="Имя пользователя">
+        <div id="user-results" class="user-results"></div>
+      </div>
+      <div id="group-panel" class="hidden">
+        <input id="group-name" placeholder="Название группы">
+        <input id="group-members" placeholder="Имена участников через запятую">
+        <button id="create-group" class="primary full">Создать группу</button>
+      </div>
+      <div id="modal-error" class="error"></div>
+    </div>
+  </div>
+  <script src="../node_modules/socket.io-client/dist/socket.io.min.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+{
+  "name": "nolink",
+  "version": "1.0.0",
+  "description": "NOLINK desktop messenger",
+  "main": "desktop/main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server/index.js",
+    "dev": "concurrently \"npm:server\" \"npm:start\"",
+    "build:win": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.23.1",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1"
+  },
+  "build": {
+    "appId": "com.nolink.desktop",
+    "productName": "NOLINK",
+    "files": [
+      "desktop/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "artifactName": "NOLINK-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NOLINK",
+      "perMachine": false
+    }
+  }
+}
