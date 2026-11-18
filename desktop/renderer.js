@@ -10,6 +10,10 @@ let selectedChats = new Set();
 let selectionMode = false;
 let pendingDelete = [];
 
+let registerMode = false;
+let verificationMode = false;
+let verificationEmail = "";
+
 const $ = id => document.getElementById(id);
 
 async function api(path, options = {}) {
@@ -71,10 +75,13 @@ function escapeText(value) {
 }
 
 // Переключение формы входа и регистрации
-let registerMode = false;
+function setAuthMode(mode) {
+  registerMode = mode;
+  verificationMode = false;
 
-$("auth-switch").addEventListener("click", () => {
-  registerMode = !registerMode;
+  $("auth-form").classList.remove("hidden");
+  $("email-verify-form").classList.add("hidden");
+  $("auth-switch").classList.remove("hidden");
 
   $("auth-title").textContent = registerMode
     ? "Создание аккаунта"
@@ -96,16 +103,31 @@ $("auth-switch").addEventListener("click", () => {
     ? "new-password"
     : "current-password";
 
+  $("password").value = "";
+  $("verification-code").value = "";
+
   showError("auth-error", "");
+}
+
+$("auth-switch").addEventListener("click", () => {
+  setAuthMode(!registerMode);
 });
 
-// Вход и регистрация
+// Возврат к регистрации
+$("back-to-auth").addEventListener("click", () => {
+  setAuthMode(true);
+});
+
+// Вход и начало регистрации
 $("auth-form").addEventListener("submit", async event => {
   event.preventDefault();
   showError("auth-error", "");
 
   const email = $("email").value.trim();
   const password = $("password").value;
+
+  const submit = $("auth-submit");
+  submit.disabled = true;
 
   try {
     const path = registerMode
@@ -126,6 +148,27 @@ $("auth-form").addEventListener("submit", async event => {
       body: JSON.stringify(body)
     });
 
+    if (registerMode) {
+      verificationEmail = result.email || email.toLowerCase();
+      $("verify-email").textContent = verificationEmail;
+
+      $("auth-form").classList.add("hidden");
+      $("email-verify-form").classList.remove("hidden");
+      $("auth-switch").classList.add("hidden");
+
+      $("auth-title").textContent = "Подтверждение почты";
+      $("verification-code").value = "";
+      $("verification-code").focus();
+
+      showError(
+        "auth-error",
+        "Код отправлен на почту. Проверь входящие и папку «Спам»."
+      );
+
+      verificationMode = true;
+      return;
+    }
+
     token = result.token;
     currentUser = result.user;
 
@@ -134,6 +177,71 @@ $("auth-form").addEventListener("submit", async event => {
     await enterApp();
   } catch (err) {
     showError("auth-error", err.message);
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+// Подтверждение кода и завершение регистрации
+$("email-verify-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  showError("auth-error", "");
+
+  const code = $("verification-code").value.trim();
+
+  if (!/^\d{6}$/.test(code)) {
+    showError("auth-error", "Введи шестизначный код из письма.");
+    return;
+  }
+
+  const submit = $("verify-submit");
+  submit.disabled = true;
+
+  try {
+    const result = await api("/api/auth/verify-registration", {
+      method: "POST",
+      body: JSON.stringify({
+        email: verificationEmail,
+        code
+      })
+    });
+
+    token = result.token;
+    currentUser = result.user;
+
+    localStorage.setItem("nolink-token", token);
+
+    verificationMode = false;
+    verificationEmail = "";
+
+    await enterApp();
+  } catch (err) {
+    showError("auth-error", err.message);
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+// Повторная отправка кода
+$("resend-code").addEventListener("click", async () => {
+  showError("auth-error", "");
+
+  const button = $("resend-code");
+  button.disabled = true;
+
+  try {
+    const result = await api("/api/auth/resend-code", {
+      method: "POST",
+      body: JSON.stringify({
+        email: verificationEmail
+      })
+    });
+
+    showError("auth-error", result.message || "Новый код отправлен.");
+  } catch (err) {
+    showError("auth-error", err.message);
+  } finally {
+    button.disabled = false;
   }
 });
 
@@ -171,6 +279,10 @@ function connectSocket() {
     }
   });
 
+  socket.on("chat:created", async () => {
+    await loadChats();
+  });
+
   socket.on("chat:deleted", ({ chatId }) => {
     chats = chats.filter(chat => chat.id !== chatId);
     selectedChats.delete(chatId);
@@ -195,7 +307,37 @@ async function loadChats() {
   }
 }
 
-// Рисование списка чатов
+// Форматирование времени
+function formatChatTime(value) {
+  if (!value) return "";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  const now = new Date();
+
+  const sameDay =
+    date.getDate() === now.getDate() &&
+    date.getMonth() === now.getMonth() &&
+    date.getFullYear() === now.getFullYear();
+
+  if (sameDay) {
+    return date.toLocaleTimeString("ru-RU", {
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  }
+
+  return date.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit"
+  });
+}
+
+// Список чатов
 function renderChats() {
   const list = $("chat-list");
   list.replaceChildren();
@@ -224,6 +366,10 @@ function renderChats() {
       checkbox.className = "chat-select";
       checkbox.checked = selectedChats.has(chat.id);
 
+      checkbox.addEventListener("click", event => {
+        event.stopPropagation();
+      });
+
       checkbox.addEventListener("change", () => {
         toggleSelected(chat.id);
       });
@@ -231,23 +377,54 @@ function renderChats() {
       item.appendChild(checkbox);
     }
 
+    const avatar = document.createElement("div");
+    avatar.className = "chat-list-avatar";
+    avatar.textContent =
+      chatName(chat).charAt(0).toUpperCase();
+
     const content = document.createElement("div");
     content.className = "chat-item-content";
 
+    const top = document.createElement("div");
+    top.className = "chat-item-top";
+
     const title = document.createElement("b");
+    title.className = "chat-item-title";
     title.textContent = chatName(chat);
 
+    const time = document.createElement("small");
+    time.className = "chat-item-time";
+
+    if (chat.lastMessage?.createdAt) {
+      time.textContent = formatChatTime(
+        chat.lastMessage.createdAt
+      );
+    }
+
+    top.append(title, time);
+
     const preview = document.createElement("small");
-    preview.textContent = chat.lastMessage
-      ? chat.lastMessage.attachmentId
-        ? "📷 Фотография"
-        : chat.lastMessage.content
-      : "Нет сообщений";
+    preview.className = "chat-item-preview";
 
-    content.append(title, preview);
-    item.appendChild(content);
+    if (!chat.lastMessage) {
+      preview.textContent = "Нет сообщений";
+    } else if (chat.lastMessage.attachmentId) {
+      preview.textContent = "📷 Фотография";
+    } else {
+      const messageText = chat.lastMessage.content || "";
 
-    item.addEventListener("click", event => {
+      const author =
+        chat.type === "group" && chat.lastMessage.username
+          ? `${chat.lastMessage.username}: `
+          : "";
+
+      preview.textContent = author + messageText;
+    }
+
+    content.append(top, preview);
+    item.append(avatar, content);
+
+    item.addEventListener("click", () => {
       if (selectionMode) {
         toggleSelected(chat.id);
       } else {
@@ -288,8 +465,12 @@ function updateSelectionToolbar() {
   );
 
   $("select-chats").textContent = selectionMode
-    ? "Отмена"
+    ? "×"
     : "☑";
+
+  $("select-chats").title = selectionMode
+    ? "Завершить выбор"
+    : "Выбрать чаты";
 
   $("delete-selected").disabled = selectedChats.size === 0;
 }
@@ -318,7 +499,7 @@ $("select-all-chats").addEventListener("click", () => {
   renderChats();
 });
 
-// Окно удаления
+// Удаление чатов
 function closeDeleteModal() {
   $("delete-modal").classList.add("hidden");
   pendingDelete = [];
@@ -431,7 +612,7 @@ async function openChat(chat) {
   }
 }
 
-// Создание элемента сообщения
+// Создание сообщения
 async function appendMessage(message) {
   const container = $("messages");
 
@@ -484,7 +665,8 @@ async function appendMessage(message) {
       content.appendChild(image);
     } catch (err) {
       const errorText = document.createElement("span");
-      errorText.textContent = "📷 Не удалось загрузить фотографию";
+      errorText.textContent =
+        "📷 Не удалось загрузить фотографию";
       content.appendChild(errorText);
     }
   } else {
@@ -552,7 +734,7 @@ $("send-form").addEventListener("submit", event => {
   );
 });
 
-// Отправка фотографий
+// Фотографии
 $("photo-button").addEventListener("click", () => {
   if (!activeChat) {
     alert("Сначала открой чат");
@@ -607,7 +789,7 @@ $("photo-input").addEventListener("change", async () => {
   }
 });
 
-// Окно создания чата
+// Создание чата
 function openNewChatModal() {
   $("modal").classList.remove("hidden");
   showError("modal-error", "");
@@ -621,7 +803,7 @@ $("new-chat").addEventListener("click", openNewChatModal);
 $("empty-new").addEventListener("click", openNewChatModal);
 $("modal-close").addEventListener("click", closeNewChatModal);
 
-// Вкладки личный чат / группа
+// Вкладки
 document.querySelectorAll(".tab").forEach(tab => {
   tab.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach(t => {
@@ -644,7 +826,6 @@ let userSearchTimer = null;
 
 $("user-search").addEventListener("input", () => {
   clearTimeout(userSearchTimer);
-
   userSearchTimer = setTimeout(searchUsers, 300);
 });
 
@@ -743,10 +924,11 @@ $("logout").addEventListener("click", () => {
   chats = [];
   selectedChats.clear();
 
+  setAuthMode(false);
   showAuth();
 });
 
-// Восстановление сессии при запуске
+// Восстановление сессии
 async function restoreSession() {
   if (!token) {
     showAuth();

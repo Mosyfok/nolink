@@ -21,6 +21,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^10.6.0",
     "pg": "^8.23.1",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1"
@@ -37,6 +38,7 @@
     },
     "win": {
       "target": "nsis",
+      "icon": "desktop/icon.ico",
       "artifactName": "NOLINK-Setup-${version}.${ext}"
     },
     "nsis": {
@@ -45,7 +47,9 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "NOLINK",
-      "perMachine": false
+      "perMachine": false,
+      "installerIcon": "desktop/icon.ico",
+      "uninstallerIcon": "desktop/icon.ico"
     }
   }
 }

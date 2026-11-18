@@ -3,10 +3,18 @@ const path = require("path");
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1280, height: 820, minWidth: 900, minHeight: 620,
+    width: 1280,
+    height: 820,
+    minWidth: 900,
+    minHeight: 620,
+
     backgroundColor: "#0b1020",
     title: "NOLINK",
     autoHideMenuBar: true,
+
+    // Иконка NOLINK
+    icon: path.join(__dirname, "icon.ico"),
+
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -14,12 +22,22 @@ function createWindow() {
       sandbox: true
     }
   });
+
   win.loadFile(path.join(__dirname, "index.html"));
 }
+
 app.whenReady().then(() => {
   createWindow();
+
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
   });
 });
-app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});

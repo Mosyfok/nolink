@@ -6,14 +6,23 @@ const http = require("http");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
 const { Server } = require("socket.io");
-const { randomUUID } = require("crypto");
+const {
+  randomUUID,
+  randomInt,
+  createHash,
+  timingSafeEqual
+} = require("crypto");
 const { Pool } = require("pg");
 
 const PORT = Number(process.env.PORT || 3030);
 const SECRET = process.env.JWT_SECRET;
 const DATABASE_URL = process.env.DATABASE_URL;
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+const CODE_LIFETIME_MINUTES = 10;
+const CODE_RESEND_SECONDS = 60;
+const MAX_CODE_ATTEMPTS = 5;
 
 if (!SECRET || SECRET.length < 24) {
   console.error("JWT_SECRET must contain at least 24 characters.");
@@ -35,6 +44,74 @@ pool.on("error", err => {
   console.error("PostgreSQL connection error:", err.message);
 });
 
+// Gmail
+function getMailer() {
+  const user = process.env.MAIL_USER;
+  const password = (process.env.MAIL_APP_PASSWORD || "")
+    .replace(/\s/g, "");
+
+  if (!user || !password) {
+    throw new Error("Настройки Gmail не добавлены на сервере");
+  }
+
+  return nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user,
+      pass: password
+    }
+  });
+}
+
+async function sendVerificationEmail(email, code) {
+  const mailer = getMailer();
+
+  const from = process.env.MAIL_FROM || process.env.MAIL_USER;
+
+  await mailer.sendMail({
+    from: `NOLINK <${from}>`,
+    to: email,
+    subject: "Код подтверждения NOLINK",
+    text:
+      `Добро пожаловать в NOLINK!\n\n` +
+      `Твой код подтверждения: ${code}\n\n` +
+      `Код действует ${CODE_LIFETIME_MINUTES} минут.\n` +
+      `Если ты не регистрировался в NOLINK, просто проигнорируй это письмо.`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#222">
+        <h1 style="color:#5865f2">NOLINK</h1>
+        <h2>Подтверждение электронной почты</h2>
+        <p>Добро пожаловать в NOLINK!</p>
+        <p>Твой код подтверждения:</p>
+        <div style="font-size:32px;font-weight:bold;letter-spacing:8px;padding:16px 0">
+          ${code}
+        </div>
+        <p>Код действует ${CODE_LIFETIME_MINUTES} минут.</p>
+        <p style="color:#777;font-size:12px">
+          Если ты не регистрировался в NOLINK, проигнорируй это письмо.
+        </p>
+      </div>
+    `
+  });
+}
+
+function makeCodeHash(email, code) {
+  return createHash("sha256")
+    .update(`${SECRET}:${email}:${code}`)
+    .digest("hex");
+}
+
+function safeHashCompare(first, second) {
+  const a = Buffer.from(first || "", "hex");
+  const b = Buffer.from(second || "", "hex");
+
+  return (
+    a.length === 32 &&
+    b.length === 32 &&
+    timingSafeEqual(a, b)
+  );
+}
+
 async function initializeDatabase() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -45,11 +122,28 @@ async function initializeDatabase() {
       created_at TIMESTAMPTZ NOT NULL
     );
 
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS email_verified BOOLEAN
+      NOT NULL DEFAULT FALSE;
+
     CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower
       ON users (LOWER(username));
 
     CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower
       ON users (LOWER(email));
+
+    CREATE TABLE IF NOT EXISTS pending_registrations (
+      email TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      last_sent_at TIMESTAMPTZ NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS pending_username_lower
+      ON pending_registrations (LOWER(username));
 
     CREATE TABLE IF NOT EXISTS chats (
       id TEXT PRIMARY KEY,
@@ -124,7 +218,9 @@ const io = new Server(server, {
 
 async function getUser(id) {
   const result = await pool.query(
-    `SELECT id, username, email, created_at AS "createdAt"
+    `SELECT id, username, email,
+            email_verified AS "emailVerified",
+            created_at AS "createdAt"
      FROM users
      WHERE id = $1`,
     [id]
@@ -228,17 +324,17 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true, app: "NOLINK" });
 });
 
-// Регистрация
+// Начало регистрации: отправка кода
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { username, email, password } = req.body || {};
 
     if (
       typeof username !== "string" ||
-      !/^[a-zA-Z0-9_]{3,20}$/.test(username)
+      !/^[\p{L}\p{N}_]{3,20}$/u.test(username)
     ) {
       return res.status(400).json({
-        error: "Имя: 3–20 символов, латиница, цифры или _"
+        error: "Имя: 3–20 символов, буквы, цифры или _"
       });
     }
 
@@ -262,25 +358,106 @@ app.post("/api/auth/register", async (req, res) => {
       });
     }
 
-    const id = randomUUID();
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedUsername = username.trim();
+
+    const existing = await pool.query(
+      `SELECT id FROM users
+       WHERE LOWER(email) = $1 OR LOWER(username) = LOWER($2)`,
+      [normalizedEmail, normalizedUsername]
+    );
+
+    if (existing.rowCount > 0) {
+      return res.status(409).json({
+        error: "Имя пользователя или почта уже заняты"
+      });
+    }
+
+    const pending = await pool.query(
+      `SELECT email, last_sent_at
+       FROM pending_registrations
+       WHERE email = $1`,
+      [normalizedEmail]
+    );
+
+    if (pending.rows[0]) {
+      const elapsed =
+        Date.now() - new Date(pending.rows[0].last_sent_at).getTime();
+
+      if (elapsed < CODE_RESEND_SECONDS * 1000) {
+        const wait = Math.ceil(
+          (CODE_RESEND_SECONDS * 1000 - elapsed) / 1000
+        );
+
+        return res.status(429).json({
+          error: `Подожди ${wait} сек. перед повторной отправкой кода`
+        });
+      }
+    }
+
+    const usernamePending = await pool.query(
+      `SELECT email FROM pending_registrations
+       WHERE LOWER(username) = LOWER($1) AND email <> $2`,
+      [normalizedUsername, normalizedEmail]
+    );
+
+    if (usernamePending.rowCount > 0) {
+      return res.status(409).json({
+        error: "Это имя уже используется в другой регистрации"
+      });
+    }
+
+    const code = String(randomInt(100000, 1000000));
+    const passwordHash = await bcrypt.hash(password, 12);
     const now = new Date();
-    const hash = await bcrypt.hash(password, 12);
+    const expiresAt = new Date(
+      now.getTime() + CODE_LIFETIME_MINUTES * 60 * 1000
+    );
 
     await pool.query(
-      `INSERT INTO users
-       (id, username, email, password_hash, created_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [id, username, email, hash, now]
+      `INSERT INTO pending_registrations
+       (email, username, password_hash, code_hash,
+        expires_at, last_sent_at, attempts)
+       VALUES ($1, $2, $3, $4, $5, $6, 0)
+       ON CONFLICT (email)
+       DO UPDATE SET
+         username = EXCLUDED.username,
+         password_hash = EXCLUDED.password_hash,
+         code_hash = EXCLUDED.code_hash,
+         expires_at = EXCLUDED.expires_at,
+         last_sent_at = EXCLUDED.last_sent_at,
+         attempts = 0`,
+      [
+        normalizedEmail,
+        normalizedUsername,
+        passwordHash,
+        makeCodeHash(normalizedEmail, code),
+        expiresAt,
+        now
+      ]
     );
 
-    const user = await getUser(id);
-    const token = jwt.sign(
-      { id },
-      SECRET,
-      { expiresIn: "30d" }
-    );
+    try {
+      await sendVerificationEmail(normalizedEmail, code);
+    } catch (mailError) {
+      await pool.query(
+        "DELETE FROM pending_registrations WHERE email = $1",
+        [normalizedEmail]
+      );
 
-    res.status(201).json({ user, token });
+      console.error("Email sending error:", mailError.message);
+
+      return res.status(503).json({
+        error: "Не удалось отправить письмо. Проверь настройки Gmail на сервере."
+      });
+    }
+
+    res.status(200).json({
+      ok: true,
+      verificationRequired: true,
+      email: normalizedEmail,
+      message: "Код подтверждения отправлен на почту"
+    });
   } catch (err) {
     if (err.code === "23505") {
       return res.status(409).json({
@@ -293,24 +470,254 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
+// Повторная отправка кода
+app.post("/api/auth/resend-code", async (req, res) => {
+  try {
+    const email = String(req.body?.email || "")
+      .trim()
+      .toLowerCase();
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({
+        error: "Укажи корректную почту"
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT email, last_sent_at
+       FROM pending_registrations
+       WHERE email = $1`,
+      [email]
+    );
+
+    const pending = result.rows[0];
+
+    if (!pending) {
+      return res.status(400).json({
+        error: "Сначала начни регистрацию заново"
+      });
+    }
+
+    const elapsed =
+      Date.now() - new Date(pending.last_sent_at).getTime();
+
+    if (elapsed < CODE_RESEND_SECONDS * 1000) {
+      const wait = Math.ceil(
+        (CODE_RESEND_SECONDS * 1000 - elapsed) / 1000
+      );
+
+      return res.status(429).json({
+        error: `Подожди ${wait} сек. перед повторной отправкой`
+      });
+    }
+
+    const code = String(randomInt(100000, 1000000));
+    const now = new Date();
+    const expiresAt = new Date(
+      now.getTime() + CODE_LIFETIME_MINUTES * 60 * 1000
+    );
+
+    await pool.query(
+      `UPDATE pending_registrations
+       SET code_hash = $2,
+           expires_at = $3,
+           last_sent_at = $4,
+           attempts = 0
+       WHERE email = $1`,
+      [
+        email,
+        makeCodeHash(email, code),
+        expiresAt,
+        now
+      ]
+    );
+
+    try {
+      await sendVerificationEmail(email, code);
+    } catch (mailError) {
+      console.error("Resend email error:", mailError.message);
+
+      return res.status(503).json({
+        error: "Не удалось отправить письмо"
+      });
+    }
+
+    res.json({
+      ok: true,
+      message: "Новый код отправлен"
+    });
+  } catch (err) {
+    console.error("Resend code error:", err);
+    res.status(500).json({
+      error: "Ошибка повторной отправки"
+    });
+  }
+});
+
+// Подтверждение почты и создание аккаунта
+app.post("/api/auth/verify-registration", async (req, res) => {
+  const email = String(req.body?.email || "")
+    .trim()
+    .toLowerCase();
+
+  const code = String(req.body?.code || "").trim();
+
+  if (
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+    !/^\d{6}$/.test(code)
+  ) {
+    return res.status(400).json({
+      error: "Проверь почту и шестизначный код"
+    });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const result = await client.query(
+      `SELECT email, username, password_hash, code_hash,
+              expires_at, attempts
+       FROM pending_registrations
+       WHERE email = $1
+       FOR UPDATE`,
+      [email]
+    );
+
+    const pending = result.rows[0];
+
+    if (!pending) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        error: "Регистрация не найдена. Начни её заново."
+      });
+    }
+
+    if (new Date(pending.expires_at).getTime() < Date.now()) {
+      await client.query(
+        "DELETE FROM pending_registrations WHERE email = $1",
+        [email]
+      );
+
+      await client.query("COMMIT");
+
+      return res.status(400).json({
+        error: "Код истёк. Начни регистрацию заново."
+      });
+    }
+
+    if (pending.attempts >= MAX_CODE_ATTEMPTS) {
+      await client.query(
+        "DELETE FROM pending_registrations WHERE email = $1",
+        [email]
+      );
+
+      await client.query("COMMIT");
+
+      return res.status(429).json({
+        error: "Слишком много попыток. Начни регистрацию заново."
+      });
+    }
+
+    const validCode = safeHashCompare(
+      pending.code_hash,
+      makeCodeHash(email, code)
+    );
+
+    if (!validCode) {
+      const nextAttempts = pending.attempts + 1;
+
+      if (nextAttempts >= MAX_CODE_ATTEMPTS) {
+        await client.query(
+          "DELETE FROM pending_registrations WHERE email = $1",
+          [email]
+        );
+      } else {
+        await client.query(
+          `UPDATE pending_registrations
+           SET attempts = $2
+           WHERE email = $1`,
+          [email, nextAttempts]
+        );
+      }
+
+      await client.query("COMMIT");
+
+      return res.status(400).json({
+        error: nextAttempts >= MAX_CODE_ATTEMPTS
+          ? "Попытки закончились. Начни регистрацию заново."
+          : `Неверный код. Осталось попыток: ${MAX_CODE_ATTEMPTS - nextAttempts}`
+      });
+    }
+
+    const id = randomUUID();
+    const now = new Date();
+
+    await client.query(
+      `INSERT INTO users
+       (id, username, email, password_hash, created_at, email_verified)
+       VALUES ($1, $2, $3, $4, $5, TRUE)`,
+      [
+        id,
+        pending.username,
+        email,
+        pending.password_hash,
+        now
+      ]
+    );
+
+    await client.query(
+      "DELETE FROM pending_registrations WHERE email = $1",
+      [email]
+    );
+
+    await client.query("COMMIT");
+
+    const user = await getUser(id);
+    const token = jwt.sign(
+      { id },
+      SECRET,
+      { expiresIn: "30d" }
+    );
+
+    res.status(201).json({ user, token });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+
+    if (err.code === "23505") {
+      return res.status(409).json({
+        error: "Имя пользователя или почта уже заняты"
+      });
+    }
+
+    console.error("Verify registration error:", err);
+
+    res.status(500).json({
+      error: "Не удалось подтвердить регистрацию"
+    });
+  } finally {
+    client.release();
+  }
+});
+
 // Вход
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { email, password } = req.body || {};
+    const email = String(req.body?.email || "").trim();
+    const password = String(req.body?.password || "");
 
     const result = await pool.query(
       "SELECT * FROM users WHERE LOWER(email) = LOWER($1)",
-      [String(email || "")]
+      [email]
     );
 
     const userRecord = result.rows[0];
 
     if (
       !userRecord ||
-      !await bcrypt.compare(
-        String(password || ""),
-        userRecord.password_hash
-      )
+      !await bcrypt.compare(password, userRecord.password_hash)
     ) {
       return res.status(401).json({
         error: "Неверная почта или пароль"
@@ -451,7 +858,15 @@ app.post("/api/chats/direct", auth, async (req, res) => {
     await client.query("COMMIT");
     transactionStarted = false;
 
-    res.status(201).json(await chatPayload(id));
+    const createdChat = await chatPayload(id);
+
+    for (const userId of [req.user.id, other.id]) {
+      io.to(`user:${userId}`).emit("chat:created", {
+        chatId: id
+      });
+    }
+
+    res.status(201).json(createdChat);
   } catch (err) {
     if (transactionStarted) {
       await client.query("ROLLBACK").catch(() => {});
@@ -464,7 +879,7 @@ app.post("/api/chats/direct", auth, async (req, res) => {
   }
 });
 
-// Создание группы. Создатель сохраняется в owner_id.
+// Создание группы
 app.post("/api/chats/group", auth, async (req, res) => {
   const client = await pool.connect();
   let transactionStarted = false;
@@ -528,7 +943,15 @@ app.post("/api/chats/group", auth, async (req, res) => {
     await client.query("COMMIT");
     transactionStarted = false;
 
-    res.status(201).json(await chatPayload(id));
+    const createdChat = await chatPayload(id);
+
+    for (const userId of unique) {
+      io.to(`user:${userId}`).emit("chat:created", {
+        chatId: id
+      });
+    }
+
+    res.status(201).json(createdChat);
   } catch (err) {
     if (transactionStarted) {
       await client.query("ROLLBACK").catch(() => {});
@@ -541,7 +964,7 @@ app.post("/api/chats/group", auth, async (req, res) => {
   }
 });
 
-// Удаление чата: только у себя или у всех
+// Удаление чата
 app.delete("/api/chats/:id", auth, async (req, res) => {
   const chatId = String(req.params.id || "");
   const mode = String(req.body?.mode || "");
@@ -775,7 +1198,6 @@ app.post("/api/chats/:id/images", auth, async (req, res) => {
         ]
       );
 
-      // Снимаем скрытие только у отправителя.
       await client.query(
         `DELETE FROM hidden_chats
          WHERE chat_id = $1 AND user_id = $2`,
@@ -867,7 +1289,6 @@ io.use(async (socket, next) => {
 });
 
 io.on("connection", socket => {
-  // Персональная комната пользователя.
   socket.join(`user:${socket.user.id}`);
 
   socket.on("chat:join", async chatId => {
@@ -921,7 +1342,6 @@ io.on("connection", socket => {
         ]
       );
 
-      // Возвращаем скрытый чат только отправителю.
       await pool.query(
         `DELETE FROM hidden_chats
          WHERE chat_id = $1 AND user_id = $2`,

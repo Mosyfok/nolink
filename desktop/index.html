@@ -5,10 +5,12 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src http: https: ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c0e15">
   <title>NOLINK</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- АВТОРИЗАЦИЯ -->
   <div id="auth" class="auth-wrap">
     <div class="auth-card">
       <div class="brand-mark">N</div>
@@ -18,41 +20,99 @@
       <h2 id="auth-title">С возвращением</h2>
       <p class="muted">Войди или создай аккаунт, чтобы начать общаться.</p>
 
+      <!-- ВХОД И РЕГИСТРАЦИЯ -->
       <form id="auth-form">
-        <label id="username-label" class="hidden">Имя пользователя</label>
-        <input id="username" class="hidden" autocomplete="username" placeholder="Например, alex">
+        <label id="username-label" class="hidden" for="username">Имя пользователя</label>
+        <input
+          id="username"
+          class="hidden"
+          autocomplete="username"
+          placeholder="Например, alex"
+        >
 
-        <label>Электронная почта</label>
-        <input id="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+        <label for="email">Электронная почта</label>
+        <input
+          id="email"
+          type="email"
+          autocomplete="email"
+          placeholder="you@example.com"
+          required
+        >
 
-        <label>Пароль</label>
-        <input id="password" type="password" autocomplete="current-password" placeholder="Не менее 8 символов" required>
+        <label for="password">Пароль</label>
+        <input
+          id="password"
+          type="password"
+          autocomplete="current-password"
+          placeholder="Не менее 8 символов"
+          required
+        >
 
-        <button class="primary full" type="submit" id="auth-submit">Войти</button>
+        <button class="primary full" type="submit" id="auth-submit">
+          Войти
+        </button>
+      </form>
+
+      <!-- ПОДТВЕРЖДЕНИЕ ПОЧТЫ -->
+      <form id="email-verify-form" class="hidden">
+        <p class="muted">
+          Мы отправили письмо с кодом подтверждения на:
+        </p>
+
+        <b id="verify-email"></b>
+
+        <label for="verification-code">Код из письма</label>
+        <input
+          id="verification-code"
+          type="text"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          maxlength="6"
+          pattern="[0-9]{6}"
+          placeholder="123456"
+          required
+        >
+
+        <button class="primary full" type="submit" id="verify-submit">
+          Подтвердить почту
+        </button>
+
+        <button class="link-btn" id="resend-code" type="button">
+          Отправить код повторно
+        </button>
+
+        <button class="link-btn" id="back-to-auth" type="button">
+          Вернуться назад
+        </button>
       </form>
 
       <div id="auth-error" class="error"></div>
-      <button class="link-btn" id="auth-switch">Нет аккаунта? Зарегистрироваться</button>
+
+      <button class="link-btn" id="auth-switch" type="button">
+        Нет аккаунта? Зарегистрироваться
+      </button>
     </div>
   </div>
 
+  <!-- ГЛАВНОЕ ОКНО -->
   <div id="app" class="app hidden">
     <aside class="sidebar">
       <div class="side-head">
         <div class="mini-logo">N</div>
         <span>NOLINK</span>
-        <button id="select-chats" class="icon-btn" title="Выбрать чаты">☑</button>
-        <button id="new-chat" class="icon-btn" title="Новый чат">＋</button>
+
+        <button id="select-chats" class="icon-btn" type="button" title="Выбрать чаты" aria-label="Выбрать чаты">☑</button>
+        <button id="new-chat" class="icon-btn" type="button" title="Новый чат" aria-label="Новый чат">＋</button>
       </div>
 
       <div class="search-wrap">
-        <input id="search" placeholder="Поиск чатов">
+        <input id="search" placeholder="Поиск чатов" aria-label="Поиск чатов">
       </div>
 
       <div id="selection-toolbar" class="selection-toolbar hidden">
-        <button id="select-all-chats">Выбрать все</button>
-        <button id="delete-selected" class="danger">Удалить выбранные</button>
-        <button id="cancel-selection">Отмена</button>
+        <button id="select-all-chats" type="button">Выбрать все</button>
+        <button id="delete-selected" class="danger" type="button">Удалить выбранные</button>
+        <button id="cancel-selection" type="button" title="Завершить выбор" aria-label="Завершить выбор">×</button>
       </div>
 
       <div class="section-label">СООБЩЕНИЯ</div>
@@ -64,18 +124,20 @@
           <b id="my-name">Пользователь</b>
           <small>В сети</small>
         </div>
-        <button id="logout" class="icon-btn" title="Выйти">↪</button>
+        <button id="logout" class="icon-btn" type="button" title="Выйти" aria-label="Выйти">↪</button>
       </div>
     </aside>
 
     <main class="main">
+      <!-- ПУСТОЕ СОСТОЯНИЕ -->
       <div id="empty-state" class="empty-state">
         <div class="empty-logo">N</div>
         <h1>Добро пожаловать в NOLINK</h1>
         <p>Выбери чат слева или начни новую переписку.</p>
-        <button class="primary" id="empty-new">＋ Новый чат</button>
+        <button class="primary" id="empty-new" type="button">＋ Новый чат</button>
       </div>
 
+      <!-- ОКНО ПЕРЕПИСКИ -->
       <section id="conversation" class="conversation hidden">
         <header class="chat-header">
           <div class="avatar" id="chat-avatar">C</div>
@@ -88,7 +150,13 @@
         <div id="messages" class="messages"></div>
 
         <form id="send-form" class="composer">
-          <input id="message-input" maxlength="4000" placeholder="Написать сообщение..." autocomplete="off">
+          <input
+            id="message-input"
+            maxlength="4000"
+            placeholder="Написать сообщение..."
+            autocomplete="off"
+            aria-label="Текст сообщения"
+          >
 
           <input
             id="photo-input"
@@ -97,74 +165,60 @@
             hidden
           >
 
-          <button
-            id="photo-button"
-            class="photo-button"
-            type="button"
-            title="Добавить фотографию"
-          >📷</button>
-
-          <button class="send-btn" type="submit">➤</button>
+          <button id="photo-button" class="photo-button" type="button" title="Добавить фотографию" aria-label="Добавить фотографию">📷</button>
+          <button class="send-btn" type="submit" title="Отправить сообщение" aria-label="Отправить сообщение">➤</button>
         </form>
       </section>
     </main>
   </div>
 
-  <!-- Окно создания чата -->
+  <!-- ОКНО СОЗДАНИЯ ЧАТА -->
   <div id="modal" class="modal hidden">
     <div class="modal-card">
-      <button id="modal-close" class="modal-close">×</button>
+      <button id="modal-close" class="modal-close" type="button" title="Закрыть" aria-label="Закрыть">×</button>
+
       <h2>Новый чат</h2>
       <p class="muted">Найди пользователя по имени или создай группу.</p>
 
       <div class="tabs">
-        <button class="tab active" data-tab="direct">Личный чат</button>
-        <button class="tab" data-tab="group">Группа</button>
+        <button class="tab active" data-tab="direct" type="button">Личный чат</button>
+        <button class="tab" data-tab="group" type="button">Группа</button>
       </div>
 
       <div id="direct-panel">
-        <input id="user-search" placeholder="Имя пользователя">
+        <input id="user-search" placeholder="Имя пользователя" aria-label="Поиск пользователя">
         <div id="user-results" class="user-results"></div>
       </div>
 
       <div id="group-panel" class="hidden">
-        <input id="group-name" placeholder="Название группы">
-        <input id="group-members" placeholder="Имена участников через запятую">
-        <button id="create-group" class="primary full">Создать группу</button>
+        <input id="group-name" placeholder="Название группы" aria-label="Название группы">
+        <input id="group-members" placeholder="Имена участников через запятую" aria-label="Участники группы">
+        <button id="create-group" class="primary full" type="button">Создать группу</button>
       </div>
 
       <div id="modal-error" class="error"></div>
     </div>
   </div>
 
-  <!-- Окно выбора способа удаления -->
+  <!-- ОКНО УДАЛЕНИЯ ЧАТОВ -->
   <div id="delete-modal" class="modal hidden">
     <div class="modal-card">
-      <button id="delete-cancel" class="modal-close">×</button>
+      <button id="delete-cancel" class="modal-close" type="button" title="Закрыть" aria-label="Закрыть">×</button>
 
       <h2>Удаление чатов</h2>
-      <p class="muted">
-        Выбери, как удалить выбранные чаты.
-      </p>
+      <p class="muted">Выбери, как удалить выбранные чаты.</p>
 
       <div class="delete-options">
-        <button id="delete-me">
-          Удалить только у меня
-        </button>
-
-        <button id="delete-everyone">
-          Удалить у всех
-        </button>
-
-        <button id="delete-cancel-bottom">
-          Отмена
-        </button>
+        <button id="delete-me" type="button">Удалить только у меня</button>
+        <button id="delete-everyone" type="button">Удалить у всех</button>
+        <button id="delete-cancel-bottom" type="button">Отмена</button>
       </div>
 
       <div id="delete-error" class="error"></div>
     </div>
   </div>
 
+  <!-- СКРИПТЫ -->
   <script src="../node_modules/socket.io-client/dist/socket.io.min.js"></script>
   <script src="renderer.js"></script>
 </body>
