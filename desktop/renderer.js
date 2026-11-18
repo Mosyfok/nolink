@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let base = localStorage.getItem("nolink-server") || "http://localhost:3030";
+let base = localStorage.getItem("nolink-server") || "https://nolink.onrender.com";
 let token = localStorage.getItem("nolink-token") || "";
 let me = null, chats = [], activeChat = null, socket = null, registerMode = false;
 $("server-url").value = base;
