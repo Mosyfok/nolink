@@ -44,7 +44,7 @@ pool.on("error", err => {
   console.error("PostgreSQL connection error:", err.message);
 });
 
-// Gmail
+// Gmail SMTP
 function getMailer() {
   const user = process.env.MAIL_USER;
   const password = (process.env.MAIL_APP_PASSWORD || "")
@@ -55,11 +55,16 @@ function getMailer() {
   }
 
   return nodemailer.createTransport({
-    service: "gmail",
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
     auth: {
       user,
       pass: password
-    }
+    },
+    connectionTimeout: 20000,
+    greetingTimeout: 20000,
+    socketTimeout: 20000
   });
 }
 
