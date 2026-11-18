@@ -13,6 +13,7 @@ const { Pool } = require("pg");
 const PORT = Number(process.env.PORT || 3030);
 const SECRET = process.env.JWT_SECRET;
 const DATABASE_URL = process.env.DATABASE_URL;
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 
 if (!SECRET || SECRET.length < 24) {
   console.error("JWT_SECRET must contain at least 24 characters.");
@@ -30,7 +31,7 @@ const pool = new Pool({
   max: 10
 });
 
-pool.on("error", (err) => {
+pool.on("error", err => {
   console.error("PostgreSQL connection error:", err.message);
 });
 
@@ -45,22 +46,36 @@ async function initializeDatabase() {
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower
-    ON users (LOWER(username));
+      ON users (LOWER(username));
 
     CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower
-    ON users (LOWER(email));
+      ON users (LOWER(email));
 
     CREATE TABLE IF NOT EXISTS chats (
       id TEXT PRIMARY KEY,
-      type TEXT NOT NULL CHECK(type IN ('direct','group')),
+      type TEXT NOT NULL CHECK (type IN ('direct', 'group')),
       name TEXT,
       created_at TIMESTAMPTZ NOT NULL
     );
 
+    ALTER TABLE chats
+      ADD COLUMN IF NOT EXISTS owner_id TEXT
+      REFERENCES users(id) ON DELETE SET NULL;
+
     CREATE TABLE IF NOT EXISTS members (
       chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      PRIMARY KEY(chat_id, user_id)
+      PRIMARY KEY (chat_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS attachments (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      mime_type TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      data BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS messages (
@@ -71,40 +86,59 @@ async function initializeDatabase() {
       created_at TIMESTAMPTZ NOT NULL
     );
 
+    ALTER TABLE messages
+      ADD COLUMN IF NOT EXISTS attachment_id TEXT
+      REFERENCES attachments(id) ON DELETE SET NULL;
+
+    CREATE TABLE IF NOT EXISTS hidden_chats (
+      chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      hidden_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (chat_id, user_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_messages_chat_time
-    ON messages(chat_id, created_at);
+      ON messages(chat_id, created_at);
 
     CREATE INDEX IF NOT EXISTS idx_members_user
-    ON members(user_id);
+      ON members(user_id);
+
+    CREATE INDEX IF NOT EXISTS idx_attachments_chat
+      ON attachments(chat_id);
   `);
 
   console.log("NOLINK PostgreSQL database is ready.");
 }
 
 const app = express();
-app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
-app.use(express.json({ limit: "32kb" }));
+const corsOrigin = process.env.CORS_ORIGIN || "*";
+
+app.use(cors({ origin: corsOrigin }));
+app.use(express.json({ limit: "8mb" }));
 
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  cors: { origin: process.env.CORS_ORIGIN || "*" }
+  cors: { origin: corsOrigin }
 });
 
 async function getUser(id) {
   const result = await pool.query(
     `SELECT id, username, email, created_at AS "createdAt"
-     FROM users WHERE id = $1`,
+     FROM users
+     WHERE id = $1`,
     [id]
   );
+
   return result.rows[0] || null;
 }
 
 async function isMember(chatId, userId) {
   const result = await pool.query(
-    "SELECT 1 FROM members WHERE chat_id=$1 AND user_id=$2",
+    "SELECT 1 FROM members WHERE chat_id = $1 AND user_id = $2",
     [chatId, userId]
   );
+
   return result.rowCount > 0;
 }
 
@@ -113,50 +147,70 @@ function auth(req, res, next) {
     const raw = (req.headers.authorization || "")
       .replace(/^Bearer\s+/i, "");
 
+    if (!raw) {
+      return res.status(401).json({
+        error: "Нужно войти в аккаунт"
+      });
+    }
+
     const payload = jwt.verify(raw, SECRET);
     const user = await getUser(payload.id);
 
     if (!user) {
-      return res.status(401).json({ error: "Аккаунт не найден" });
+      return res.status(401).json({
+        error: "Аккаунт не найден"
+      });
     }
 
     req.user = user;
     next();
   })().catch(() => {
-    res.status(401).json({ error: "Нужно войти в аккаунт" });
+    if (!res.headersSent) {
+      res.status(401).json({
+        error: "Нужно войти в аккаунт"
+      });
+    }
   });
 }
 
 function publicUser(user) {
-  return { id: user.id, username: user.username };
+  return {
+    id: user.id,
+    username: user.username
+  };
 }
 
 async function chatPayload(chatId) {
   const chatResult = await pool.query(
-    `SELECT id, type, name, created_at AS "createdAt"
-     FROM chats WHERE id=$1`,
+    `SELECT id, type, name, owner_id AS "ownerId",
+            created_at AS "createdAt"
+     FROM chats
+     WHERE id = $1`,
     [chatId]
   );
 
   const chat = chatResult.rows[0];
+
   if (!chat) return null;
 
   const [membersResult, lastResult] = await Promise.all([
     pool.query(
       `SELECT u.id, u.username
        FROM users u
-       JOIN members m ON m.user_id=u.id
-       WHERE m.chat_id=$1
+       JOIN members m ON m.user_id = u.id
+       WHERE m.chat_id = $1
        ORDER BY u.username`,
       [chatId]
     ),
+
     pool.query(
       `SELECT m.id, m.chat_id AS "chatId",
               m.user_id AS "userId", u.username,
-              m.content, m.created_at AS "createdAt"
+              m.content, m.attachment_id AS "attachmentId",
+              m.created_at AS "createdAt"
        FROM messages m
-       JOIN users u ON u.id=m.user_id
-       WHERE m.chat_id=$1
+       JOIN users u ON u.id = m.user_id
+       WHERE m.chat_id = $1
        ORDER BY m.created_at DESC
        LIMIT 1`,
       [chatId]
@@ -174,6 +228,7 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true, app: "NOLINK" });
 });
 
+// Регистрация
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { username, email, password } = req.body || {};
@@ -189,7 +244,7 @@ app.post("/api/auth/register", async (req, res) => {
 
     if (
       typeof email !== "string" ||
-      !/^.+@.+\..+$/.test(email) ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
       email.length > 254
     ) {
       return res.status(400).json({
@@ -219,7 +274,11 @@ app.post("/api/auth/register", async (req, res) => {
     );
 
     const user = await getUser(id);
-    const token = jwt.sign({ id }, SECRET, { expiresIn: "30d" });
+    const token = jwt.sign(
+      { id },
+      SECRET,
+      { expiresIn: "30d" }
+    );
 
     res.status(201).json({ user, token });
   } catch (err) {
@@ -234,12 +293,13 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
+// Вход
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
 
     const result = await pool.query(
-      "SELECT * FROM users WHERE LOWER(email)=LOWER($1)",
+      "SELECT * FROM users WHERE LOWER(email) = LOWER($1)",
       [String(email || "")]
     );
 
@@ -271,10 +331,12 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// Текущий пользователь
 app.get("/api/me", auth, (req, res) => {
   res.json({ user: req.user });
 });
 
+// Поиск пользователей
 app.get("/api/users", auth, async (req, res) => {
   try {
     const q = String(req.query.q || "").trim().slice(0, 30);
@@ -282,23 +344,35 @@ app.get("/api/users", auth, async (req, res) => {
     if (q.length < 2) return res.json([]);
 
     const result = await pool.query(
-      `SELECT id, username FROM users
-       WHERE username ILIKE $1 AND id<>$2
-       ORDER BY username LIMIT 20`,
+      `SELECT id, username
+       FROM users
+       WHERE username ILIKE $1 AND id <> $2
+       ORDER BY username
+       LIMIT 20`,
       [`%${q}%`, req.user.id]
     );
 
     res.json(result.rows.map(publicUser));
   } catch (err) {
-    console.error(err);
+    console.error("User search error:", err);
     res.status(500).json({ error: "Ошибка поиска" });
   }
 });
 
+// Список чатов
 app.get("/api/chats", auth, async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT chat_id FROM members WHERE user_id=$1",
+      `SELECT m.chat_id
+       FROM members m
+       WHERE m.user_id = $1
+         AND NOT EXISTS (
+           SELECT 1
+           FROM hidden_chats h
+           WHERE h.chat_id = m.chat_id
+             AND h.user_id = $1
+         )
+       ORDER BY m.chat_id`,
       [req.user.id]
     );
 
@@ -308,18 +382,20 @@ app.get("/api/chats", auth, async (req, res) => {
 
     res.json(chats.filter(Boolean));
   } catch (err) {
-    console.error(err);
+    console.error("Load chats error:", err);
     res.status(500).json({ error: "Ошибка загрузки чатов" });
   }
 });
 
+// Создание или открытие личного чата
 app.post("/api/chats/direct", auth, async (req, res) => {
   const client = await pool.connect();
+  let transactionStarted = false;
 
   try {
     const otherResult = await client.query(
-      "SELECT id FROM users WHERE id=$1",
-      [String(req.body.userId || "")]
+      "SELECT id FROM users WHERE id = $1",
+      [String(req.body?.userId || "")]
     );
 
     const other = otherResult.rows[0];
@@ -331,51 +407,72 @@ app.post("/api/chats/direct", auth, async (req, res) => {
     }
 
     const existing = await client.query(
-      `SELECT c.id FROM chats c
-       JOIN members a ON a.chat_id=c.id AND a.user_id=$1
-       JOIN members b ON b.chat_id=c.id AND b.user_id=$2
-       WHERE c.type='direct' LIMIT 1`,
+      `SELECT c.id
+       FROM chats c
+       JOIN members a
+         ON a.chat_id = c.id AND a.user_id = $1
+       JOIN members b
+         ON b.chat_id = c.id AND b.user_id = $2
+       WHERE c.type = 'direct'
+       LIMIT 1`,
       [req.user.id, other.id]
     );
 
     if (existing.rows[0]) {
-      const chat = await chatPayload(existing.rows[0].id);
-      return res.json(chat);
+      const id = existing.rows[0].id;
+
+      await client.query(
+        `DELETE FROM hidden_chats
+         WHERE chat_id = $1 AND user_id = $2`,
+        [id, req.user.id]
+      );
+
+      return res.json(await chatPayload(id));
     }
 
     const id = randomUUID();
     const now = new Date();
 
     await client.query("BEGIN");
+    transactionStarted = true;
 
     await client.query(
-      "INSERT INTO chats(id,type,created_at) VALUES($1,'direct',$2)",
+      `INSERT INTO chats (id, type, created_at)
+       VALUES ($1, 'direct', $2)`,
       [id, now]
     );
 
     await client.query(
-      "INSERT INTO members(chat_id,user_id) VALUES($1,$2),($1,$3)",
+      `INSERT INTO members (chat_id, user_id)
+       VALUES ($1, $2), ($1, $3)`,
       [id, req.user.id, other.id]
     );
 
     await client.query("COMMIT");
+    transactionStarted = false;
 
     res.status(201).json(await chatPayload(id));
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    console.error(err);
+    if (transactionStarted) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+
+    console.error("Create direct chat error:", err);
     res.status(500).json({ error: "Ошибка создания чата" });
   } finally {
     client.release();
   }
 });
 
+// Создание группы. Создатель сохраняется в owner_id.
 app.post("/api/chats/group", auth, async (req, res) => {
   const client = await pool.connect();
+  let transactionStarted = false;
 
   try {
-    const name = String(req.body.name || "").trim().slice(0, 60);
-    const usernames = Array.isArray(req.body.usernames)
+    const name = String(req.body?.name || "").trim().slice(0, 60);
+
+    const usernames = Array.isArray(req.body?.usernames)
       ? req.body.usernames.slice(0, 49)
       : [];
 
@@ -389,11 +486,14 @@ app.post("/api/chats/group", auth, async (req, res) => {
 
     for (const username of usernames) {
       const result = await client.query(
-        "SELECT id FROM users WHERE LOWER(username)=LOWER($1)",
-        [String(username)]
+        `SELECT id FROM users
+         WHERE LOWER(username) = LOWER($1)`,
+        [String(username).trim()]
       );
 
-      if (result.rows[0]) found.push(result.rows[0].id);
+      if (result.rows[0]) {
+        found.push(result.rows[0].id);
+      }
     }
 
     const unique = [...new Set([req.user.id, ...found])];
@@ -408,31 +508,123 @@ app.post("/api/chats/group", auth, async (req, res) => {
     const now = new Date();
 
     await client.query("BEGIN");
+    transactionStarted = true;
 
     await client.query(
-      "INSERT INTO chats(id,type,name,created_at) VALUES($1,'group',$2,$3)",
-      [id, name, now]
+      `INSERT INTO chats
+       (id, type, name, owner_id, created_at)
+       VALUES ($1, 'group', $2, $3, $4)`,
+      [id, name, req.user.id, now]
     );
 
     for (const userId of unique) {
       await client.query(
-        "INSERT INTO members(chat_id,user_id) VALUES($1,$2)",
+        `INSERT INTO members (chat_id, user_id)
+         VALUES ($1, $2)`,
         [id, userId]
       );
     }
 
     await client.query("COMMIT");
+    transactionStarted = false;
 
     res.status(201).json(await chatPayload(id));
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    console.error(err);
+    if (transactionStarted) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+
+    console.error("Create group error:", err);
     res.status(500).json({ error: "Ошибка создания группы" });
   } finally {
     client.release();
   }
 });
 
+// Удаление чата: только у себя или у всех
+app.delete("/api/chats/:id", auth, async (req, res) => {
+  const chatId = String(req.params.id || "");
+  const mode = String(req.body?.mode || "");
+
+  try {
+    const chatResult = await pool.query(
+      `SELECT id, type, owner_id
+       FROM chats
+       WHERE id = $1`,
+      [chatId]
+    );
+
+    const chat = chatResult.rows[0];
+
+    if (!chat || !await isMember(chatId, req.user.id)) {
+      return res.status(404).json({
+        error: "Чат не найден"
+      });
+    }
+
+    if (mode === "me") {
+      await pool.query(
+        `INSERT INTO hidden_chats
+         (chat_id, user_id, hidden_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (chat_id, user_id)
+         DO UPDATE SET hidden_at = NOW()`,
+        [chatId, req.user.id]
+      );
+
+      return res.json({
+        ok: true,
+        mode: "me",
+        chatId
+      });
+    }
+
+    if (mode !== "everyone") {
+      return res.status(400).json({
+        error: "Неизвестный вариант удаления"
+      });
+    }
+
+    if (
+      chat.type === "group" &&
+      chat.owner_id !== req.user.id
+    ) {
+      return res.status(403).json({
+        error: "Удалить группу у всех может только её создатель"
+      });
+    }
+
+    const members = await pool.query(
+      "SELECT user_id FROM members WHERE chat_id = $1",
+      [chatId]
+    );
+
+    await pool.query(
+      "DELETE FROM chats WHERE id = $1",
+      [chatId]
+    );
+
+    for (const member of members.rows) {
+      io.to(`user:${member.user_id}`).emit(
+        "chat:deleted",
+        { chatId }
+      );
+    }
+
+    res.json({
+      ok: true,
+      mode: "everyone",
+      chatId
+    });
+  } catch (err) {
+    console.error("Delete chat error:", err);
+    res.status(500).json({
+      error: "Не удалось удалить чат"
+    });
+  }
+});
+
+// Получение сообщений
 app.get("/api/chats/:id/messages", auth, async (req, res) => {
   try {
     if (!await isMember(req.params.id, req.user.id)) {
@@ -444,21 +636,216 @@ app.get("/api/chats/:id/messages", auth, async (req, res) => {
     const result = await pool.query(
       `SELECT m.id, m.chat_id AS "chatId",
               m.user_id AS "userId", u.username,
-              m.content, m.created_at AS "createdAt"
+              m.content, m.attachment_id AS "attachmentId",
+              m.created_at AS "createdAt"
        FROM messages m
-       JOIN users u ON u.id=m.user_id
-       WHERE m.chat_id=$1
-       ORDER BY m.created_at DESC LIMIT 100`,
+       JOIN users u ON u.id = m.user_id
+       WHERE m.chat_id = $1
+       ORDER BY m.created_at DESC
+       LIMIT 100`,
       [req.params.id]
     );
 
     res.json(result.rows.reverse());
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Ошибка загрузки сообщений" });
+    console.error("Load messages error:", err);
+    res.status(500).json({
+      error: "Ошибка загрузки сообщений"
+    });
   }
 });
 
+// Загрузка фотографии
+app.post("/api/chats/:id/images", auth, async (req, res) => {
+  try {
+    const chatId = String(req.params.id || "");
+
+    if (!await isMember(chatId, req.user.id)) {
+      return res.status(403).json({
+        error: "Нет доступа к чату"
+      });
+    }
+
+    const mime = String(req.body?.mime || "");
+
+    const filename = String(req.body?.filename || "photo")
+      .replace(/[^\w.\-а-яА-Я]/g, "_")
+      .slice(0, 100);
+
+    const allowed = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/gif"
+    ];
+
+    if (!allowed.includes(mime)) {
+      return res.status(400).json({
+        error: "Поддерживаются JPG, PNG, WEBP и GIF"
+      });
+    }
+
+    const encoded = String(req.body?.data || "");
+
+    if (
+      !encoded ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)
+    ) {
+      return res.status(400).json({
+        error: "Некорректный файл"
+      });
+    }
+
+    const buffer = Buffer.from(encoded, "base64");
+
+    if (!buffer.length || buffer.length > MAX_IMAGE_SIZE) {
+      return res.status(400).json({
+        error: "Размер фотографии должен быть не больше 5 МБ"
+      });
+    }
+
+    const isJpeg =
+      mime === "image/jpeg" &&
+      buffer.length >= 3 &&
+      buffer[0] === 0xff &&
+      buffer[1] === 0xd8 &&
+      buffer[2] === 0xff;
+
+    const isPng =
+      mime === "image/png" &&
+      buffer.length >= 8 &&
+      buffer.subarray(0, 8).equals(
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+      );
+
+    const isWebp =
+      mime === "image/webp" &&
+      buffer.length >= 12 &&
+      buffer.toString("ascii", 0, 4) === "RIFF" &&
+      buffer.toString("ascii", 8, 12) === "WEBP";
+
+    const isGif =
+      mime === "image/gif" &&
+      buffer.length >= 6 &&
+      ["GIF87a", "GIF89a"].includes(
+        buffer.toString("ascii", 0, 6)
+      );
+
+    if (!isJpeg && !isPng && !isWebp && !isGif) {
+      return res.status(400).json({
+        error: "Файл не похож на поддерживаемое изображение"
+      });
+    }
+
+    const attachmentId = randomUUID();
+    const messageId = randomUUID();
+    const now = new Date();
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      await client.query(
+        `INSERT INTO attachments
+         (id, chat_id, user_id, mime_type, filename, data, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          attachmentId,
+          chatId,
+          req.user.id,
+          mime,
+          filename,
+          buffer,
+          now
+        ]
+      );
+
+      await client.query(
+        `INSERT INTO messages
+         (id, chat_id, user_id, content, attachment_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          messageId,
+          chatId,
+          req.user.id,
+          "Фотография",
+          attachmentId,
+          now
+        ]
+      );
+
+      // Снимаем скрытие только у отправителя.
+      await client.query(
+        `DELETE FROM hidden_chats
+         WHERE chat_id = $1 AND user_id = $2`,
+        [chatId, req.user.id]
+      );
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    const msg = {
+      id: messageId,
+      chatId,
+      userId: req.user.id,
+      username: req.user.username,
+      content: "Фотография",
+      attachmentId,
+      createdAt: now
+    };
+
+    io.to(chatId).emit("message:new", msg);
+
+    res.status(201).json(msg);
+  } catch (err) {
+    console.error("Image upload error:", err);
+    res.status(500).json({
+      error: "Не удалось отправить фотографию"
+    });
+  }
+});
+
+// Получение фотографии
+app.get("/api/attachments/:id", auth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT a.chat_id, a.mime_type, a.data
+       FROM attachments a
+       WHERE a.id = $1`,
+      [req.params.id]
+    );
+
+    const attachment = result.rows[0];
+
+    if (
+      !attachment ||
+      !await isMember(attachment.chat_id, req.user.id)
+    ) {
+      return res.status(404).json({
+        error: "Фотография не найдена"
+      });
+    }
+
+    res.setHeader("Content-Type", attachment.mime_type);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cache-Control", "private, max-age=3600");
+
+    res.send(attachment.data);
+  } catch (err) {
+    console.error("Get attachment error:", err);
+    res.status(500).json({
+      error: "Ошибка загрузки фотографии"
+    });
+  }
+});
+
+// Авторизация Socket.IO
 io.use(async (socket, next) => {
   try {
     const payload = jwt.verify(
@@ -468,7 +855,9 @@ io.use(async (socket, next) => {
 
     const user = await getUser(payload.id);
 
-    if (!user) return next(new Error("Аккаунт не найден"));
+    if (!user) {
+      return next(new Error("Аккаунт не найден"));
+    }
 
     socket.user = user;
     next();
@@ -478,6 +867,9 @@ io.use(async (socket, next) => {
 });
 
 io.on("connection", socket => {
+  // Персональная комната пользователя.
+  socket.join(`user:${socket.user.id}`);
+
   socket.on("chat:join", async chatId => {
     try {
       if (
@@ -487,7 +879,7 @@ io.on("connection", socket => {
         socket.join(chatId);
       }
     } catch (err) {
-      console.error(err);
+      console.error("Chat join error:", err);
     }
   });
 
@@ -512,13 +904,14 @@ io.on("connection", socket => {
         userId: socket.user.id,
         username: socket.user.username,
         content,
+        attachmentId: null,
         createdAt: new Date()
       };
 
       await pool.query(
         `INSERT INTO messages
-         (id,chat_id,user_id,content,created_at)
-         VALUES($1,$2,$3,$4,$5)`,
+         (id, chat_id, user_id, content, created_at)
+         VALUES ($1, $2, $3, $4, $5)`,
         [
           msg.id,
           chatId,
@@ -528,11 +921,22 @@ io.on("connection", socket => {
         ]
       );
 
+      // Возвращаем скрытый чат только отправителю.
+      await pool.query(
+        `DELETE FROM hidden_chats
+         WHERE chat_id = $1 AND user_id = $2`,
+        [chatId, socket.user.id]
+      );
+
       io.to(chatId).emit("message:new", msg);
 
-      if (typeof ack === "function") ack(null);
+      if (typeof ack === "function") {
+        ack(null);
+      }
     } catch (err) {
-      if (typeof ack === "function") ack(err.message);
+      if (typeof ack === "function") {
+        ack(err.message);
+      }
     }
   });
 });

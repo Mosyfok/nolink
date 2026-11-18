@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="ru">
 <head>
@@ -13,42 +14,60 @@
       <div class="brand-mark">N</div>
       <div class="brand">NOLINK</div>
       <div class="tagline">YOUR SPACE. YOUR MESSAGES.</div>
+
       <h2 id="auth-title">С возвращением</h2>
       <p class="muted">Войди или создай аккаунт, чтобы начать общаться.</p>
+
       <form id="auth-form">
         <label id="username-label" class="hidden">Имя пользователя</label>
         <input id="username" class="hidden" autocomplete="username" placeholder="Например, alex">
+
         <label>Электронная почта</label>
         <input id="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+
         <label>Пароль</label>
         <input id="password" type="password" autocomplete="current-password" placeholder="Не менее 8 символов" required>
+
         <button class="primary full" type="submit" id="auth-submit">Войти</button>
       </form>
+
       <div id="auth-error" class="error"></div>
       <button class="link-btn" id="auth-switch">Нет аккаунта? Зарегистрироваться</button>
-      <div class="server-config">
-        <label>Адрес сервера</label>
-        <input id="server-url" placeholder="http://localhost:3030">
-        <small>Для общения через интернет укажи адрес общего сервера NOLINK.</small>
-      </div>
     </div>
   </div>
 
   <div id="app" class="app hidden">
     <aside class="sidebar">
       <div class="side-head">
-        <div class="mini-logo">N</div><span>NOLINK</span>
+        <div class="mini-logo">N</div>
+        <span>NOLINK</span>
+        <button id="select-chats" class="icon-btn" title="Выбрать чаты">☑</button>
         <button id="new-chat" class="icon-btn" title="Новый чат">＋</button>
       </div>
-      <div class="search-wrap"><input id="search" placeholder="Поиск чатов"></div>
+
+      <div class="search-wrap">
+        <input id="search" placeholder="Поиск чатов">
+      </div>
+
+      <div id="selection-toolbar" class="selection-toolbar hidden">
+        <button id="select-all-chats">Выбрать все</button>
+        <button id="delete-selected" class="danger">Удалить выбранные</button>
+        <button id="cancel-selection">Отмена</button>
+      </div>
+
       <div class="section-label">СООБЩЕНИЯ</div>
       <div id="chat-list" class="chat-list"></div>
+
       <div class="profile">
         <div class="avatar" id="my-avatar">N</div>
-        <div class="profile-info"><b id="my-name">Пользователь</b><small>В сети</small></div>
+        <div class="profile-info">
+          <b id="my-name">Пользователь</b>
+          <small>В сети</small>
+        </div>
         <button id="logout" class="icon-btn" title="Выйти">↪</button>
       </div>
     </aside>
+
     <main class="main">
       <div id="empty-state" class="empty-state">
         <div class="empty-logo">N</div>
@@ -56,37 +75,96 @@
         <p>Выбери чат слева или начни новую переписку.</p>
         <button class="primary" id="empty-new">＋ Новый чат</button>
       </div>
+
       <section id="conversation" class="conversation hidden">
         <header class="chat-header">
           <div class="avatar" id="chat-avatar">C</div>
-          <div><b id="chat-title">Чат</b><small id="chat-subtitle">NOLINK</small></div>
+          <div>
+            <b id="chat-title">Чат</b>
+            <small id="chat-subtitle">NOLINK</small>
+          </div>
         </header>
+
         <div id="messages" class="messages"></div>
+
         <form id="send-form" class="composer">
           <input id="message-input" maxlength="4000" placeholder="Написать сообщение..." autocomplete="off">
+
+          <input
+            id="photo-input"
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            hidden
+          >
+
+          <button
+            id="photo-button"
+            class="photo-button"
+            type="button"
+            title="Добавить фотографию"
+          >📷</button>
+
           <button class="send-btn" type="submit">➤</button>
         </form>
       </section>
     </main>
   </div>
+
+  <!-- Окно создания чата -->
   <div id="modal" class="modal hidden">
     <div class="modal-card">
       <button id="modal-close" class="modal-close">×</button>
       <h2>Новый чат</h2>
       <p class="muted">Найди пользователя по имени или создай группу.</p>
-      <div class="tabs"><button class="tab active" data-tab="direct">Личный чат</button><button class="tab" data-tab="group">Группа</button></div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="direct">Личный чат</button>
+        <button class="tab" data-tab="group">Группа</button>
+      </div>
+
       <div id="direct-panel">
         <input id="user-search" placeholder="Имя пользователя">
         <div id="user-results" class="user-results"></div>
       </div>
+
       <div id="group-panel" class="hidden">
         <input id="group-name" placeholder="Название группы">
         <input id="group-members" placeholder="Имена участников через запятую">
         <button id="create-group" class="primary full">Создать группу</button>
       </div>
+
       <div id="modal-error" class="error"></div>
     </div>
   </div>
+
+  <!-- Окно выбора способа удаления -->
+  <div id="delete-modal" class="modal hidden">
+    <div class="modal-card">
+      <button id="delete-cancel" class="modal-close">×</button>
+
+      <h2>Удаление чатов</h2>
+      <p class="muted">
+        Выбери, как удалить выбранные чаты.
+      </p>
+
+      <div class="delete-options">
+        <button id="delete-me">
+          Удалить только у меня
+        </button>
+
+        <button id="delete-everyone">
+          Удалить у всех
+        </button>
+
+        <button id="delete-cancel-bottom">
+          Отмена
+        </button>
+      </div>
+
+      <div id="delete-error" class="error"></div>
+    </div>
+  </div>
+
   <script src="../node_modules/socket.io-client/dist/socket.io.min.js"></script>
   <script src="renderer.js"></script>
 </body>
