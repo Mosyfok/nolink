@@ -459,6 +459,24 @@ function addMessageStyles() {
       opacity: .7;
       font-style: italic;
     }
+
+    .message-edit-area {
+      margin-top: 8px;
+      width: 100%;
+    }
+
+    .message-edit-area textarea {
+      display: block;
+      width: 100%;
+      min-height: 65px;
+      box-sizing: border-box;
+      padding: 8px;
+      border: 1px solid rgba(128,128,128,.4);
+      border-radius: 8px;
+      background: var(--input-bg, transparent);
+      color: inherit;
+      font: inherit;
+    }
   `;
 
   document.head.appendChild(style);
@@ -627,6 +645,14 @@ function connectSocket() {
 
   socket.on("connect_error", err => {
     console.error("Socket connection error:", err.message);
+  });
+
+  // Повторно присоединяемся к открытому чату после переподключения.
+  socket.on("connect", () => {
+    if (activeChat?.id) {
+      socket.emit("chat:join", activeChat.id);
+      socket.emit("chat:read", activeChat.id);
+    }
   });
 
   socket.on("presence:snapshot", userIds => {
@@ -898,8 +924,6 @@ function startTyping() {
 
   if (!isTyping) {
     isTyping = true;
-
-    // Сервер ожидает строку chatId, а не объект { chatId }.
     socket.emit("typing:start", activeChat.id);
   }
 
@@ -915,7 +939,6 @@ function stopTyping() {
   typingTimer = null;
 
   if (isTyping && activeChat && socket?.connected) {
-    // Сервер ожидает строку chatId, а не объект { chatId }.
     socket.emit("typing:stop", activeChat.id);
   }
 
@@ -1477,42 +1500,94 @@ function editMessage(message) {
     return;
   }
 
-  const newContent = prompt(
-    "Измени текст сообщения:",
-    message.content || ""
-  );
+  const wrapper = [...$("messages").querySelectorAll("[data-message-id]")]
+    .find(element =>
+      element.dataset.messageId === String(message.id)
+    );
 
-  if (newContent === null) return;
+  if (!wrapper) return;
 
-  const content = newContent.trim();
+  if (wrapper.querySelector(".message-edit-area")) return;
 
-  if (!content) {
-    alert("Сообщение не может быть пустым");
-    return;
-  }
+  const content = wrapper.querySelector(".message-content");
+  if (!content) return;
 
-  if (content.length > 4000) {
-    alert("Сообщение слишком длинное");
-    return;
-  }
+  const editor = document.createElement("div");
+  editor.className = "message-edit-area";
 
-  socket.emit(
-    "message:edit",
-    {
-      chatId: activeChat.id,
-      messageId: message.id,
-      content
-    },
-    (error, updated) => {
-      if (error) {
-        alert(error);
-        return;
-      }
+  const textarea = document.createElement("textarea");
+  textarea.value = message.content || "";
+  textarea.maxLength = 4000;
+  textarea.rows = 3;
 
-      if (updated) {
-        replaceMessage(updated);
-      }
+  const buttons = document.createElement("div");
+  buttons.className = "message-tools";
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = "Сохранить";
+
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Отмена";
+
+  cancel.addEventListener("click", () => {
+    editor.remove();
+  });
+
+  save.addEventListener("click", () => {
+    const newContent = textarea.value.trim();
+
+    if (!newContent) {
+      alert("Сообщение не может быть пустым");
+      return;
     }
+
+    if (newContent.length > 4000) {
+      alert("Сообщение слишком длинное");
+      return;
+    }
+
+    if (!socket?.connected) {
+      alert("Нет подключения к серверу");
+      return;
+    }
+
+    save.disabled = true;
+
+    socket.emit(
+      "message:edit",
+      {
+        chatId: activeChat.id,
+        messageId: message.id,
+        content: newContent
+      },
+      (error, updated) => {
+        save.disabled = false;
+
+        if (error) {
+          alert(typeof error === "string" ? error : error.message);
+          return;
+        }
+
+        if (updated) {
+          replaceMessage(updated);
+        } else {
+          alert("Сервер не вернул обновлённое сообщение");
+        }
+      }
+    );
+  });
+
+  buttons.append(save, cancel);
+  editor.append(textarea, buttons);
+
+  content.after(editor);
+
+  textarea.focus();
+  textarea.setSelectionRange(
+    textarea.value.length,
+    textarea.value.length
   );
 }
 

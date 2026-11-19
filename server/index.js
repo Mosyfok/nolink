@@ -1,3 +1,4 @@
+
 require("dotenv").config({
   path: require("path").resolve(__dirname, "../.env")
 });
@@ -379,6 +380,32 @@ async function isMember(chatId, userId) {
   );
 
   return result.rowCount > 0;
+}
+
+/*
+ * Отправляет индикатор печати всем остальным участникам чата.
+ * Используем персональные комнаты user:ID, чтобы событие доходило
+ * даже тогда, когда получатель ещё не вошёл в комнату самого чата.
+ */
+async function emitTypingUpdate(chatId, userId, username, isTyping) {
+  const result = await pool.query(
+    `SELECT user_id
+     FROM members
+     WHERE chat_id = $1
+       AND user_id <> $2`,
+    [chatId, userId]
+  );
+
+  const payload = {
+    chatId,
+    userId,
+    username,
+    isTyping
+  };
+
+  for (const member of result.rows) {
+    io.to(`user:${member.user_id}`).emit("typing:update", payload);
+  }
 }
 
 function auth(req, res, next) {
@@ -1633,7 +1660,7 @@ io.on("connection", socket => {
     }
   });
 
-  /* Индикатор печати. */
+  /* Индикатор печати. Отправка через персональные комнаты участников. */
   socket.on("typing:start", async chatId => {
     try {
       if (
@@ -1641,12 +1668,12 @@ io.on("connection", socket => {
         !await isMember(chatId, userId)
       ) return;
 
-      socket.to(chatId).emit("typing:update", {
+      await emitTypingUpdate(
         chatId,
         userId,
-        username: socket.user.username,
-        isTyping: true
-      });
+        socket.user.username,
+        true
+      );
     } catch (err) {
       console.error("Typing start error:", err);
     }
@@ -1659,12 +1686,12 @@ io.on("connection", socket => {
         !await isMember(chatId, userId)
       ) return;
 
-      socket.to(chatId).emit("typing:update", {
+      await emitTypingUpdate(
         chatId,
         userId,
-        username: socket.user.username,
-        isTyping: false
-      });
+        socket.user.username,
+        false
+      );
     } catch (err) {
       console.error("Typing stop error:", err);
     }
