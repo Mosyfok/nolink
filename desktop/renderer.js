@@ -2158,3 +2158,909 @@ async function restoreSession() {
 }
 
 restoreSession();
+/* =========================================================
+   NOLINK — АУДИО- И ВИДЕОЗВОНКИ WEBRTC
+   Вставить в конец renderer.js
+   ========================================================= */
+
+const NOLINK_CALL_CONFIG = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" }
+  ]
+};
+
+let nolinkCall = null;
+let nolinkLocalStream = null;
+let nolinkPeer = null;
+let nolinkCallTimer = null;
+let nolinkCallSeconds = 0;
+let nolinkCallMuted = false;
+let nolinkCameraEnabled = true;
+let nolinkPendingCandidates = [];
+
+function createCallInterface() {
+  if ($("nolink-call-styles")) return;
+
+  const style = document.createElement("style");
+  style.id = "nolink-call-styles";
+  style.textContent = `
+    .nolink-call-buttons {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
+
+    .nolink-call-buttons button {
+      width: 38px;
+      height: 38px;
+      border: 0;
+      border-radius: 12px;
+      background: rgba(128,128,128,.16);
+      color: inherit;
+      cursor: pointer;
+      font-size: 17px;
+    }
+
+    .nolink-call-buttons button:hover {
+      background: rgba(128,128,128,.3);
+    }
+
+    #nolink-call-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(5, 8, 18, .88);
+      backdrop-filter: blur(16px);
+    }
+
+    #nolink-call-overlay.hidden {
+      display: none;
+    }
+
+    .nolink-call-window {
+      width: min(520px, 100%);
+      min-height: 420px;
+      padding: 28px;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 24px;
+      background: #111827;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      gap: 22px;
+      box-shadow: 0 25px 90px rgba(0,0,0,.5);
+    }
+
+    .nolink-call-heading {
+      text-align: center;
+    }
+
+    .nolink-call-heading h2 {
+      margin: 0 0 8px;
+      font-size: 22px;
+    }
+
+    .nolink-call-heading p {
+      margin: 0;
+      color: #aab4c5;
+      font-size: 14px;
+    }
+
+    .nolink-call-avatar {
+      width: 112px;
+      height: 112px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #5268d8, #8b5cf6);
+      font-size: 42px;
+      font-weight: 700;
+    }
+
+    .nolink-call-video-area {
+      width: 100%;
+      position: relative;
+      display: none;
+      overflow: hidden;
+      border-radius: 16px;
+      background: #080d18;
+      aspect-ratio: 16 / 10;
+    }
+
+    .nolink-call-video-area.visible {
+      display: block;
+    }
+
+    #nolink-remote-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    #nolink-local-video {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      width: 120px;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      border: 2px solid rgba(255,255,255,.7);
+      border-radius: 12px;
+      background: #111;
+      transform: scaleX(-1);
+    }
+
+    .nolink-call-controls {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .nolink-call-controls button {
+      width: 52px;
+      height: 52px;
+      border: 0;
+      border-radius: 50%;
+      background: #293449;
+      color: white;
+      cursor: pointer;
+      font-size: 19px;
+    }
+
+    .nolink-call-controls button:disabled {
+      opacity: .45;
+      cursor: default;
+    }
+
+    .nolink-call-controls .nolink-call-end {
+      background: #e5484d;
+      width: 58px;
+      height: 58px;
+    }
+
+    .nolink-call-controls .nolink-call-accept {
+      background: #16a36a;
+      width: 58px;
+      height: 58px;
+    }
+
+    #nolink-call-incoming-actions {
+      display: none;
+      gap: 20px;
+    }
+
+    #nolink-call-incoming-actions.visible {
+      display: flex;
+    }
+
+    #nolink-call-active-actions {
+      display: none;
+      gap: 14px;
+    }
+
+    #nolink-call-active-actions.visible {
+      display: flex;
+    }
+
+    .nolink-call-note {
+      color: #aab4c5;
+      font-size: 12px;
+      text-align: center;
+      min-height: 16px;
+    }
+
+    @media (max-width: 600px) {
+      .nolink-call-window {
+        min-height: 380px;
+        padding: 20px;
+      }
+
+      #nolink-local-video {
+        width: 90px;
+      }
+    }
+  `;
+
+  document.head.appendChild(style);
+
+  const overlay = document.createElement("div");
+  overlay.id = "nolink-call-overlay";
+  overlay.className = "hidden";
+
+  overlay.innerHTML = `
+    <div class="nolink-call-window">
+      <div class="nolink-call-heading">
+        <h2 id="nolink-call-name">Звонок</h2>
+        <p id="nolink-call-status">Подключение...</p>
+      </div>
+
+      <div id="nolink-call-avatar" class="nolink-call-avatar">N</div>
+
+      <div id="nolink-call-video-area" class="nolink-call-video-area">
+        <video id="nolink-remote-video" autoplay playsinline></video>
+        <video id="nolink-local-video" autoplay muted playsinline></video>
+      </div>
+
+      <div id="nolink-call-note" class="nolink-call-note"></div>
+
+      <div id="nolink-call-incoming-actions" class="nolink-call-controls">
+        <button id="nolink-call-reject" class="nolink-call-end" title="Отклонить">✕</button>
+        <button id="nolink-call-accept" class="nolink-call-accept" title="Принять">✓</button>
+      </div>
+
+      <div id="nolink-call-active-actions" class="nolink-call-controls">
+        <button id="nolink-call-mute" title="Микрофон">🎙</button>
+        <button id="nolink-call-camera" title="Камера">📷</button>
+        <button id="nolink-call-end" class="nolink-call-end" title="Завершить">✕</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  $("nolink-call-accept").addEventListener("click", acceptNolinkCall);
+  $("nolink-call-reject").addEventListener("click", rejectNolinkCall);
+  $("nolink-call-end").addEventListener("click", () => {
+    endNolinkCall(true);
+  });
+
+  $("nolink-call-mute").addEventListener("click", toggleNolinkMute);
+  $("nolink-call-camera").addEventListener("click", toggleNolinkCamera);
+}
+
+function addCallButtons() {
+  const header = $("chat-title")?.parentElement?.parentElement;
+  if (!header || $("nolink-call-buttons")) return;
+
+  const buttons = document.createElement("div");
+  buttons.id = "nolink-call-buttons";
+  buttons.className = "nolink-call-buttons";
+
+  const audio = document.createElement("button");
+  audio.type = "button";
+  audio.id = "nolink-audio-call";
+  audio.title = "Аудиозвонок";
+  audio.textContent = "☎";
+
+  const video = document.createElement("button");
+  video.type = "button";
+  video.id = "nolink-video-call";
+  video.title = "Видеозвонок";
+  video.textContent = "▣";
+
+  audio.addEventListener("click", () => startNolinkCall("audio"));
+  video.addEventListener("click", () => startNolinkCall("video"));
+
+  buttons.append(audio, video);
+  header.appendChild(buttons);
+}
+
+function updateCallButtons() {
+  const buttons = $("nolink-call-buttons");
+  if (!buttons) return;
+
+  const isDirect = activeChat && activeChat.type !== "group";
+
+  buttons.classList.toggle("hidden", !isDirect);
+
+  const disabled = !socket?.connected || !!nolinkCall;
+
+  $("nolink-audio-call").disabled = disabled;
+  $("nolink-video-call").disabled = disabled;
+}
+
+function showNolinkCallWindow(name, status) {
+  createCallInterface();
+
+  $("nolink-call-overlay").classList.remove("hidden");
+  $("nolink-call-name").textContent = name || "Пользователь";
+  $("nolink-call-status").textContent = status || "Звонок";
+  $("nolink-call-avatar").textContent =
+    (name || "N").charAt(0).toUpperCase();
+
+  $("nolink-call-incoming-actions").classList.remove("visible");
+  $("nolink-call-active-actions").classList.remove("visible");
+  $("nolink-call-video-area").classList.remove("visible");
+}
+
+function setNolinkCallStatus(status) {
+  if ($("nolink-call-status")) {
+    $("nolink-call-status").textContent = status;
+  }
+}
+
+function getNolinkCallName() {
+  if (nolinkCall?.name) return nolinkCall.name;
+
+  if (activeChat) return chatName(activeChat);
+
+  return "Пользователь";
+}
+
+function startNolinkCallTimer() {
+  clearInterval(nolinkCallTimer);
+  nolinkCallSeconds = 0;
+
+  nolinkCallTimer = setInterval(() => {
+    nolinkCallSeconds++;
+
+    const minutes = String(
+      Math.floor(nolinkCallSeconds / 60)
+    ).padStart(2, "0");
+
+    const seconds = String(
+      nolinkCallSeconds % 60
+    ).padStart(2, "0");
+
+    setNolinkCallStatus(`${minutes}:${seconds}`);
+  }, 1000);
+}
+
+async function startNolinkCall(type) {
+  if (!activeChat || activeChat.type === "group") {
+    alert("Звонки доступны только в личных чатах.");
+    return;
+  }
+
+  if (!socket?.connected) {
+    alert("Нет подключения к серверу.");
+    return;
+  }
+
+  if (nolinkCall) {
+    alert("Сначала заверши текущий звонок.");
+    return;
+  }
+
+  const other = getOtherMember(activeChat);
+
+  if (!other) {
+    alert("Не удалось определить собеседника.");
+    return;
+  }
+
+  nolinkCall = {
+    role: "caller",
+    type,
+    chatId: String(activeChat.id),
+    name: other.username || "Пользователь",
+    status: "ringing",
+    callId: null
+  };
+
+  showNolinkCallWindow(nolinkCall.name, "Вызов...");
+  $("nolink-call-note").textContent = "Ожидание ответа";
+  updateCallButtons();
+
+  socket.emit(
+    "call:start",
+    {
+      chatId: String(activeChat.id),
+      type
+    },
+    async (error, result) => {
+      if (error) {
+        alert(typeof error === "string" ? error : error.message);
+        await cleanupNolinkCall();
+        return;
+      }
+
+      if (!result) {
+        await cleanupNolinkCall();
+        alert("Сервер не подтвердил создание звонка.");
+        return;
+      }
+
+      nolinkCall.callId = result.callId || result.id;
+      nolinkCall.status = "ringing";
+    }
+  );
+}
+
+async function acceptNolinkCall() {
+  if (!nolinkCall || nolinkCall.role !== "callee") return;
+  if (!socket?.connected) return;
+
+  try {
+    $("nolink-call-accept").disabled = true;
+
+    await prepareNolinkMedia();
+
+    socket.emit(
+      "call:accept",
+      { callId: nolinkCall.callId },
+      async (error) => {
+        if (error) {
+          alert(typeof error === "string" ? error : error.message);
+          await cleanupNolinkCall();
+          return;
+        }
+
+        nolinkCall.status = "accepted";
+        $("nolink-call-incoming-actions").classList.remove("visible");
+        $("nolink-call-active-actions").classList.add("visible");
+
+        setNolinkCallStatus("Подключение...");
+        await createNolinkPeer();
+      }
+    );
+  } catch (error) {
+    alert(
+      error.name === "NotAllowedError"
+        ? "Нет разрешения на доступ к микрофону или камере."
+        : "Не удалось включить микрофон или камеру: " + error.message
+    );
+
+    await rejectNolinkCall();
+  } finally {
+    $("nolink-call-accept").disabled = false;
+  }
+}
+
+async function rejectNolinkCall() {
+  if (!nolinkCall) return;
+
+  if (socket?.connected && nolinkCall.callId) {
+    socket.emit("call:reject", {
+      callId: nolinkCall.callId
+    });
+  }
+
+  await cleanupNolinkCall();
+}
+
+async function prepareNolinkMedia() {
+  if (!nolinkCall) throw new Error("Звонок не найден");
+
+  const audio = true;
+  const video = nolinkCall.type === "video";
+
+  nolinkLocalStream = await navigator.mediaDevices.getUserMedia({
+    audio,
+    video
+  });
+
+  $("nolink-local-video").srcObject = nolinkLocalStream;
+
+  if (video) {
+    $("nolink-call-video-area").classList.add("visible");
+    $("nolink-call-avatar").style.display = "none";
+  } else {
+    $("nolink-call-video-area").classList.remove("visible");
+    $("nolink-call-avatar").style.display = "flex";
+  }
+}
+
+async function createNolinkPeer() {
+  if (!nolinkCall || !nolinkLocalStream) {
+    throw new Error("Медиа устройства не готовы");
+  }
+
+  if (nolinkPeer) {
+    nolinkPeer.close();
+  }
+
+  nolinkPeer = new RTCPeerConnection(NOLINK_CALL_CONFIG);
+  nolinkPendingCandidates = [];
+
+  for (const track of nolinkLocalStream.getTracks()) {
+    nolinkPeer.addTrack(track, nolinkLocalStream);
+  }
+
+  nolinkPeer.ontrack = event => {
+    const stream = event.streams?.[0];
+
+    if (stream) {
+      $("nolink-remote-video").srcObject = stream;
+
+      if (nolinkCall.type === "video") {
+        $("nolink-call-video-area").classList.add("visible");
+        $("nolink-call-avatar").style.display = "none";
+      }
+    }
+  };
+
+  nolinkPeer.onicecandidate = event => {
+    if (!event.candidate || !nolinkCall?.callId) return;
+
+    socket.emit("call:ice", {
+      callId: nolinkCall.callId,
+      candidate: event.candidate.toJSON()
+    });
+  };
+
+  nolinkPeer.onconnectionstatechange = () => {
+    if (!nolinkPeer) return;
+
+    if (nolinkPeer.connectionState === "connected") {
+      startNolinkCallTimer();
+    }
+
+    if (
+      nolinkPeer.connectionState === "failed" ||
+      nolinkPeer.connectionState === "disconnected"
+    ) {
+      setNolinkCallStatus("Соединение потеряно");
+    }
+  };
+
+  if (nolinkCall.role === "caller") {
+    const offer = await nolinkPeer.createOffer();
+
+    await nolinkPeer.setLocalDescription(offer);
+
+    socket.emit("call:offer", {
+      callId: nolinkCall.callId,
+      offer: {
+        type: offer.type,
+        sdp: offer.sdp
+      }
+    });
+  }
+
+  if (nolinkCall.role === "callee" && nolinkCall.pendingOffer) {
+    await applyNolinkOffer(nolinkCall.pendingOffer);
+  }
+}
+
+async function applyNolinkOffer(offer) {
+  if (!nolinkPeer || !offer) return;
+
+  await nolinkPeer.setRemoteDescription(
+    new RTCSessionDescription(offer)
+  );
+
+  for (const candidate of nolinkPendingCandidates) {
+    try {
+      await nolinkPeer.addIceCandidate(
+        new RTCIceCandidate(candidate)
+      );
+    } catch (error) {
+      console.error("ICE candidate error:", error);
+    }
+  }
+
+  nolinkPendingCandidates = [];
+
+  const answer = await nolinkPeer.createAnswer();
+
+  await nolinkPeer.setLocalDescription(answer);
+
+  socket.emit("call:answer", {
+    callId: nolinkCall.callId,
+    answer: {
+      type: answer.type,
+      sdp: answer.sdp
+    }
+  });
+}
+
+async function handleNolinkAnswer(answer) {
+  if (!nolinkPeer || !answer) return;
+
+  await nolinkPeer.setRemoteDescription(
+    new RTCSessionDescription(answer)
+  );
+
+  for (const candidate of nolinkPendingCandidates) {
+    try {
+      await nolinkPeer.addIceCandidate(
+        new RTCIceCandidate(candidate)
+      );
+    } catch (error) {
+      console.error("ICE candidate error:", error);
+    }
+  }
+
+  nolinkPendingCandidates = [];
+}
+
+async function handleNolinkIce(candidate) {
+  if (!candidate) return;
+
+  if (!nolinkPeer || !nolinkPeer.remoteDescription) {
+    nolinkPendingCandidates.push(candidate);
+    return;
+  }
+
+  try {
+    await nolinkPeer.addIceCandidate(
+      new RTCIceCandidate(candidate)
+    );
+  } catch (error) {
+    console.error("ICE candidate error:", error);
+  }
+}
+
+function toggleNolinkMute() {
+  if (!nolinkLocalStream) return;
+
+  nolinkCallMuted = !nolinkCallMuted;
+
+  for (const track of nolinkLocalStream.getAudioTracks()) {
+    track.enabled = !nolinkCallMuted;
+  }
+
+  $("nolink-call-mute").textContent =
+    nolinkCallMuted ? "🔇" : "🎙";
+
+  $("nolink-call-mute").title =
+    nolinkCallMuted ? "Включить микрофон" : "Выключить микрофон";
+}
+
+function toggleNolinkCamera() {
+  if (!nolinkLocalStream) return;
+
+  const tracks = nolinkLocalStream.getVideoTracks();
+
+  if (!tracks.length) return;
+
+  nolinkCameraEnabled = !nolinkCameraEnabled;
+
+  for (const track of tracks) {
+    track.enabled = nolinkCameraEnabled;
+  }
+
+  $("nolink-call-camera").textContent =
+    nolinkCameraEnabled ? "📷" : "🚫";
+
+  $("nolink-call-camera").title =
+    nolinkCameraEnabled ? "Выключить камеру" : "Включить камеру";
+}
+
+async function endNolinkCall(notifyServer = true) {
+  if (notifyServer && socket?.connected && nolinkCall?.callId) {
+    socket.emit("call:end", {
+      callId: nolinkCall.callId
+    });
+  }
+
+  await cleanupNolinkCall();
+}
+
+async function cleanupNolinkCall() {
+  clearInterval(nolinkCallTimer);
+  nolinkCallTimer = null;
+  nolinkCallSeconds = 0;
+
+  if (nolinkPeer) {
+    nolinkPeer.ontrack = null;
+    nolinkPeer.onicecandidate = null;
+    nolinkPeer.close();
+    nolinkPeer = null;
+  }
+
+  if (nolinkLocalStream) {
+    for (const track of nolinkLocalStream.getTracks()) {
+      track.stop();
+    }
+
+    nolinkLocalStream = null;
+  }
+
+  if ($("nolink-remote-video")) {
+    $("nolink-remote-video").srcObject = null;
+  }
+
+  if ($("nolink-local-video")) {
+    $("nolink-local-video").srcObject = null;
+  }
+
+  if ($("nolink-call-overlay")) {
+    $("nolink-call-overlay").classList.add("hidden");
+  }
+
+  if ($("nolink-call-avatar")) {
+    $("nolink-call-avatar").style.display = "flex";
+  }
+
+  nolinkCall = null;
+  nolinkPendingCandidates = [];
+  nolinkCallMuted = false;
+  nolinkCameraEnabled = true;
+
+  updateCallButtons();
+}
+
+/* =========================================================
+   СОБЫТИЯ SOCKET.IO ДЛЯ ЗВОНКОВ
+   ========================================================= */
+
+function connectNolinkCallEvents() {
+  if (!socket) return;
+
+  socket.off("call:incoming");
+  socket.off("call:accepted");
+  socket.off("call:offer");
+  socket.off("call:answer");
+  socket.off("call:ice");
+  socket.off("call:ended");
+
+  socket.on("call:incoming", data => {
+    if (!data || nolinkCall) {
+      if (data?.callId && socket?.connected) {
+        socket.emit("call:reject", {
+          callId: data.callId
+        });
+      }
+      return;
+    }
+
+    const chat = chats.find(
+      item => String(item.id) === String(data.chatId)
+    );
+
+    if (!chat || chat.type === "group") return;
+
+    const caller = (chat.members || []).find(
+      member => String(member.id) !== String(currentUser.id)
+    );
+
+    nolinkCall = {
+      role: "callee",
+      type: data.type === "video" ? "video" : "audio",
+      chatId: String(data.chatId),
+      callId: data.callId,
+      name: data.caller?.username || caller?.username || "Пользователь",
+      status: "ringing",
+      pendingOffer: null
+    };
+
+    showNolinkCallWindow(
+      nolinkCall.name,
+      nolinkCall.type === "video"
+        ? "Входящий видеозвонок"
+        : "Входящий аудиозвонок"
+    );
+
+    $("nolink-call-note").textContent = "Вам звонят";
+    $("nolink-call-incoming-actions").classList.add("visible");
+
+    updateCallButtons();
+  });
+
+  socket.on("call:accepted", async data => {
+    if (
+      !nolinkCall ||
+      nolinkCall.role !== "caller" ||
+      String(data?.callId) !== String(nolinkCall.callId)
+    ) {
+      return;
+    }
+
+    try {
+      nolinkCall.status = "accepted";
+
+      setNolinkCallStatus("Собеседник ответил");
+      $("nolink-call-note").textContent = "";
+
+      await prepareNolinkMedia();
+
+      $("nolink-call-active-actions").classList.add("visible");
+
+      await createNolinkPeer();
+    } catch (error) {
+      alert(
+        error.name === "NotAllowedError"
+          ? "Разреши доступ к микрофону или камере в настройках приложения."
+          : "Не удалось начать звонок: " + error.message
+      );
+
+      await endNolinkCall(true);
+    }
+  });
+
+  socket.on("call:offer", async data => {
+    if (
+      !nolinkCall ||
+      nolinkCall.role !== "callee" ||
+      String(data?.callId) !== String(nolinkCall.callId)
+    ) {
+      return;
+    }
+
+    try {
+      nolinkCall.pendingOffer = data.offer;
+
+      if (!nolinkPeer && nolinkLocalStream) {
+        await createNolinkPeer();
+      } else if (nolinkPeer) {
+        await applyNolinkOffer(data.offer);
+      }
+    } catch (error) {
+      console.error("Ошибка обработки offer:", error);
+      await endNolinkCall(true);
+    }
+  });
+
+  socket.on("call:answer", async data => {
+    if (
+      !nolinkCall ||
+      nolinkCall.role !== "caller" ||
+      String(data?.callId) !== String(nolinkCall.callId)
+    ) {
+      return;
+    }
+
+    try {
+      await handleNolinkAnswer(data.answer);
+    } catch (error) {
+      console.error("Ошибка обработки answer:", error);
+      await endNolinkCall(true);
+    }
+  });
+
+  socket.on("call:ice", async data => {
+    if (
+      !nolinkCall ||
+      String(data?.callId) !== String(nolinkCall.callId)
+    ) {
+      return;
+    }
+
+    await handleNolinkIce(data.candidate);
+  });
+
+  socket.on("call:ended", async data => {
+    if (
+      !nolinkCall ||
+      (data?.callId &&
+        String(data.callId) !== String(nolinkCall.callId))
+    ) {
+      return;
+    }
+
+    const reason = data?.reason;
+
+    if (reason === "rejected") {
+      setNolinkCallStatus("Звонок отклонён");
+    } else if (reason === "disconnected") {
+      setNolinkCallStatus("Собеседник отключился");
+    } else {
+      setNolinkCallStatus("Звонок завершён");
+    }
+
+    await cleanupNolinkCall();
+  });
+}
+
+/* =========================================================
+   ПОДКЛЮЧЕНИЕ К СУЩЕСТВУЮЩЕМУ ИНТЕРФЕЙСУ
+   ========================================================= */
+
+const originalNolinkConnectSocket = connectSocket;
+
+connectSocket = function () {
+  originalNolinkConnectSocket();
+
+  if (socket) {
+    connectNolinkCallEvents();
+
+    socket.on("connect", () => {
+      connectNolinkCallEvents();
+      updateCallButtons();
+    });
+  }
+};
+
+const originalNolinkOpenChat = openChat;
+
+openChat = async function (chat) {
+  await originalNolinkOpenChat(chat);
+
+  addCallButtons();
+  updateCallButtons();
+};
+
+createCallInterface();
+addCallButtons();
+updateCallButtons();

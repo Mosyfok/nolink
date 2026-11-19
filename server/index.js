@@ -348,6 +348,60 @@ const io = new Server(server, {
 
 const onlineUsers = new Map();
 
+// Активные звонки и занятость пользователей.
+const activeCalls = new Map();
+const userCalls = new Map();
+
+function finishCall(callId, reason = "ended") {
+  const call = activeCalls.get(callId);
+  if (!call) return;
+
+  activeCalls.delete(callId);
+
+  if (userCalls.get(call.callerId) === callId) {
+    userCalls.delete(call.callerId);
+  }
+
+  if (userCalls.get(call.calleeId) === callId) {
+    userCalls.delete(call.calleeId);
+  }
+
+  const payload = {
+    callId,
+    chatId: call.chatId,
+    reason
+  };
+
+  io.to(`user:${call.callerId}`).emit("call:ended", payload);
+  io.to(`user:${call.calleeId}`).emit("call:ended", payload);
+}
+
+async function getDirectCallParticipants(chatId, userId) {
+  const result = await pool.query(
+    `SELECT c.id, c.type, m.user_id
+     FROM chats c
+     JOIN members m ON m.chat_id = c.id
+     WHERE c.id = $1
+     ORDER BY m.user_id`,
+    [chatId]
+  );
+
+  if (
+    result.rows.length !== 2 ||
+    result.rows.some(row => row.type !== "direct")
+  ) {
+    throw new Error("Звонки доступны только в личных чатах");
+  }
+
+  const participants = result.rows.map(row => row.user_id);
+
+  if (!participants.includes(userId)) {
+    throw new Error("Нет доступа к этому чату");
+  }
+
+  return participants;
+}
+
 async function getUser(id) {
   const result = await pool.query(
     `SELECT id, username, email,
@@ -382,11 +436,6 @@ async function isMember(chatId, userId) {
   return result.rowCount > 0;
 }
 
-/*
- * Отправляет индикатор печати всем остальным участникам чата.
- * Используем персональные комнаты user:ID, чтобы событие доходило
- * даже тогда, когда получатель ещё не вошёл в комнату самого чата.
- */
 async function emitTypingUpdate(chatId, userId, username, isTyping) {
   const result = await pool.query(
     `SELECT user_id
@@ -448,10 +497,6 @@ function publicUser(user) {
   };
 }
 
-/*
- * Единый формат сообщения для API и Socket.IO.
- * readBy содержит ID участников, которые прочитали сообщение.
- */
 async function getMessage(messageId) {
   const result = await pool.query(
     `SELECT
@@ -1366,6 +1411,13 @@ app.delete("/api/chats/:id", auth, async (req, res) => {
       [chatId]
     );
 
+    // Завершаем звонок, если удаляемый чат используется в звонке.
+    for (const [callId, call] of activeCalls) {
+      if (call.chatId === chatId) {
+        finishCall(callId, "chat-deleted");
+      }
+    }
+
     await pool.query("DELETE FROM chats WHERE id = $1", [chatId]);
 
     for (const member of members.rows) {
@@ -1613,6 +1665,231 @@ io.on("connection", socket => {
     io.emit("presence:update", { userId, isOnline: true });
   }
 
+  /* -------------------- ЗВОНКИ WEBRTC -------------------- */
+
+  // Начало аудио- или видеозвонка.
+  socket.on("call:start", async (payload, ack) => {
+    try {
+      const chatId = String(payload?.chatId || "");
+      const type = payload?.type;
+
+      if (!chatId) {
+        throw new Error("Не указан чат");
+      }
+
+      if (!["audio", "video"].includes(type)) {
+        throw new Error("Неизвестный тип звонка");
+      }
+
+      const participants = await getDirectCallParticipants(
+        chatId,
+        userId
+      );
+
+      const calleeId = participants.find(id => id !== userId);
+
+      if (!calleeId) {
+        throw new Error("Собеседник не найден");
+      }
+
+      if (!onlineUsers.has(calleeId)) {
+        throw new Error("Пользователь сейчас не в сети");
+      }
+
+      if (userCalls.has(userId) || userCalls.has(calleeId)) {
+        throw new Error("Один из пользователей уже участвует в звонке");
+      }
+
+      const callId = randomUUID();
+
+      const call = {
+        callId,
+        chatId,
+        callerId: userId,
+        calleeId,
+        type,
+        status: "ringing",
+        createdAt: Date.now()
+      };
+
+      activeCalls.set(callId, call);
+      userCalls.set(userId, callId);
+      userCalls.set(calleeId, callId);
+
+      io.to(`user:${calleeId}`).emit("call:incoming", {
+        callId,
+        chatId,
+        type,
+        caller: publicUser(socket.user)
+      });
+
+      if (typeof ack === "function") {
+        ack(null, { callId });
+      }
+    } catch (err) {
+      if (typeof ack === "function") {
+        ack(err.message);
+      }
+    }
+  });
+
+  // Принятие входящего звонка.
+  socket.on("call:accept", (payload, ack) => {
+    try {
+      const callId = String(payload?.callId || "");
+      const call = activeCalls.get(callId);
+
+      if (!call || call.calleeId !== userId) {
+        throw new Error("Звонок больше недоступен");
+      }
+
+      if (call.status !== "ringing") {
+        throw new Error("Звонок уже принят или завершён");
+      }
+
+      call.status = "accepted";
+
+      io.to(`user:${call.callerId}`).emit("call:accepted", {
+        callId
+      });
+
+      if (typeof ack === "function") {
+        ack(null, { ok: true });
+      }
+    } catch (err) {
+      if (typeof ack === "function") {
+        ack(err.message);
+      }
+    }
+  });
+
+  // Отклонение входящего звонка.
+  socket.on("call:reject", (payload, ack) => {
+    const callId = String(payload?.callId || "");
+    const call = activeCalls.get(callId);
+
+    if (!call || call.calleeId !== userId) {
+      if (typeof ack === "function") {
+        ack("Звонок больше недоступен");
+      }
+      return;
+    }
+
+    finishCall(callId, "rejected");
+
+    if (typeof ack === "function") {
+      ack(null, { ok: true });
+    }
+  });
+
+  // Передача WebRTC offer, answer и ICE candidate.
+  function relayCallSignal(eventName, payload, ack) {
+    try {
+      const callId = String(payload?.callId || "");
+      const call = activeCalls.get(callId);
+
+      if (!call || call.status !== "accepted") {
+        throw new Error("Активный звонок не найден");
+      }
+
+      const isCaller = call.callerId === userId;
+      const isCallee = call.calleeId === userId;
+
+      if (!isCaller && !isCallee) {
+        throw new Error("Нет доступа к звонку");
+      }
+
+      if (eventName === "call:offer" && !isCaller) {
+        throw new Error("Offer может отправить только инициатор");
+      }
+
+      if (eventName === "call:answer" && !isCallee) {
+        throw new Error("Answer может отправить только получатель");
+      }
+
+      const targetId = isCaller ? call.calleeId : call.callerId;
+
+      let data;
+
+      if (eventName === "call:offer" || eventName === "call:answer") {
+        const sdp = payload?.sdp;
+
+        if (
+          !sdp ||
+          typeof sdp !== "object" ||
+          typeof sdp.type !== "string" ||
+          typeof sdp.sdp !== "string" ||
+          sdp.sdp.length > 100000
+        ) {
+          throw new Error("Некорректное описание соединения");
+        }
+
+        data = { sdp };
+      } else {
+        const candidate = payload?.candidate;
+
+        if (
+          !candidate ||
+          typeof candidate !== "object" ||
+          typeof candidate.candidate !== "string" ||
+          candidate.candidate.length > 5000
+        ) {
+          throw new Error("Некорректный ICE candidate");
+        }
+
+        data = { candidate };
+      }
+
+      io.to(`user:${targetId}`).emit(eventName, {
+        callId,
+        ...data
+      });
+
+      if (typeof ack === "function") {
+        ack(null, { ok: true });
+      }
+    } catch (err) {
+      if (typeof ack === "function") {
+        ack(err.message);
+      }
+    }
+  }
+
+  socket.on("call:offer", (payload, ack) => {
+    relayCallSignal("call:offer", payload, ack);
+  });
+
+  socket.on("call:answer", (payload, ack) => {
+    relayCallSignal("call:answer", payload, ack);
+  });
+
+  socket.on("call:ice", (payload, ack) => {
+    relayCallSignal("call:ice", payload, ack);
+  });
+
+  // Завершение или отмена звонка любым участником.
+  socket.on("call:end", (payload, ack) => {
+    const callId = String(payload?.callId || "");
+    const call = activeCalls.get(callId);
+
+    if (
+      !call ||
+      (call.callerId !== userId && call.calleeId !== userId)
+    ) {
+      if (typeof ack === "function") {
+        ack("Звонок уже завершён");
+      }
+      return;
+    }
+
+    finishCall(callId, "ended");
+
+    if (typeof ack === "function") {
+      ack(null, { ok: true });
+    }
+  });
+
+  /* Отключение пользователя и очистка его активного звонка. */
   socket.on("disconnect", () => {
     const active = onlineUsers.get(userId);
     if (!active) return;
@@ -1621,6 +1898,13 @@ io.on("connection", socket => {
 
     if (active.size === 0) {
       onlineUsers.delete(userId);
+
+      const callId = userCalls.get(userId);
+
+      if (callId) {
+        finishCall(callId, "disconnected");
+      }
+
       io.emit("presence:update", { userId, isOnline: false });
     }
   });
