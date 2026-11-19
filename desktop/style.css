@@ -796,3 +796,62 @@ input::placeholder {
     padding: 10px;
   }
 }
+
+
+/* ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ */
+.profile-card {
+  text-align: center;
+}
+
+.profile-avatar-large {
+  display: grid;
+  place-items: center;
+  width: 82px;
+  height: 82px;
+  margin: 18px auto 22px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #5865f2, #35416e);
+  color: #fff;
+  font-size: 34px;
+  font-weight: 800;
+  box-shadow: 0 8px 28px #5865f244;
+}
+
+.profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 13px 14px;
+  margin-top: 9px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel2);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.profile-field small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.profile-field b {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.chat-list-avatar.is-online {
+  position: relative;
+}
+
+.chat-list-avatar.is-online::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: #35c982;
+}

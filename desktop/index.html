@@ -170,10 +170,18 @@
         <div class="profile-info">
           <b id="my-name">Пользователь</b>
           <small id="my-nolink-id">@nolink</small>
-          <small>В сети</small>
+          <small id="my-presence">В сети</small>
         </div>
 
         <!-- КНОПКА УПРАВЛЕНИЯ ГАЛОЧКАМИ -->
+        <button
+          id="profile-open"
+          class="icon-btn"
+          type="button"
+          title="Мой профиль"
+          aria-label="Мой профиль"
+        >⚙</button>
+
         <button
           id="badge-admin-button"
           class="icon-btn hidden"
@@ -363,6 +371,43 @@
 
       <div id="badge-user-results" class="user-results"></div>
       <div id="badge-error" class="error"></div>
+    </div>
+  </div>
+
+  <!-- ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ -->
+  <div id="profile-modal" class="modal hidden">
+    <div class="modal-card profile-card">
+      <button
+        id="profile-close"
+        class="modal-close"
+        type="button"
+        title="Закрыть"
+        aria-label="Закрыть"
+      >×</button>
+
+      <h2>Мой профиль</h2>
+      <div class="profile-avatar-large" id="profile-avatar">N</div>
+      <div class="profile-field">
+        <small>Имя пользователя</small>
+        <b id="profile-username">Пользователь</b>
+      </div>
+      <div class="profile-field">
+        <small>Электронная почта</small>
+        <b id="profile-email">—</b>
+      </div>
+      <div class="profile-field">
+        <small>NOLINK ID</small>
+        <b id="profile-nolink-id">@nolink</b>
+        <small class="muted">Этот ID задаётся при регистрации и не меняется.</small>
+      </div>
+      <div class="profile-field">
+        <small>Статус</small>
+        <b id="profile-presence">В сети</b>
+      </div>
+      <div class="profile-field">
+        <small>Дата регистрации</small>
+        <b id="profile-created">—</b>
+      </div>
     </div>
   </div>
 

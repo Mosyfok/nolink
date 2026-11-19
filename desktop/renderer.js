@@ -1,4 +1,3 @@
-
 const base = "https://nolink.onrender.com";
 
 let token = localStorage.getItem("nolink-token");
@@ -82,6 +81,11 @@ function showApp() {
     currentUser.isVerified
   );
 
+  if ($("my-presence")) {
+    $("my-presence").textContent = currentUser.isOnline === false
+      ? "Не в сети" : "В сети";
+  }
+
   const myNolinkId = $("my-nolink-id");
 
   if (myNolinkId) {
@@ -122,6 +126,68 @@ function getOtherMember(chat) {
     member => member.id !== currentUser.id
   ) || null;
 }
+
+function setUserPresence(userId, isOnline) {
+  for (const chat of chats) {
+    for (const member of chat.members || []) {
+      if (member.id === userId) member.isOnline = isOnline === true;
+    }
+  }
+
+  if (currentUser?.id === userId) {
+    currentUser.isOnline = isOnline === true;
+    const label = isOnline ? "В сети" : "Не в сети";
+    if ($("my-presence")) $("my-presence").textContent = label;
+    if ($("profile-presence")) $("profile-presence").textContent = label;
+  }
+
+  if (activeChat && getOtherMember(activeChat)?.id === userId) {
+    updateActiveChatSubtitle();
+  }
+
+  renderChats();
+}
+
+function updateActiveChatSubtitle() {
+  if (!activeChat) return;
+  const other = getOtherMember(activeChat);
+
+  $("chat-subtitle").textContent = activeChat.type === "group"
+    ? `${activeChat.members.length} участников`
+    : (other?.isOnline ? "В сети" : "Не в сети");
+}
+
+function openProfile() {
+  if (!currentUser) return;
+
+  $("profile-avatar").textContent =
+    (currentUser.username || "N").charAt(0).toUpperCase();
+  $("profile-username").textContent = currentUser.username || "Пользователь";
+  $("profile-email").textContent = currentUser.email || "—";
+  $("profile-nolink-id").textContent = formatNolinkId(currentUser.nolinkId) || "Не указан";
+  $("profile-presence").textContent = currentUser.isOnline === false ? "Не в сети" : "В сети";
+
+  const created = currentUser.createdAt
+    ? new Date(currentUser.createdAt)
+    : null;
+  $("profile-created").textContent = created && !Number.isNaN(created.getTime())
+    ? created.toLocaleDateString("ru-RU", {
+        day: "2-digit", month: "long", year: "numeric"
+      })
+    : "—";
+
+  $("profile-modal").classList.remove("hidden");
+}
+
+$("profile-open").addEventListener("click", openProfile);
+$("profile-close").addEventListener("click", () => {
+  $("profile-modal").classList.add("hidden");
+});
+$("profile-modal").addEventListener("click", event => {
+  if (event.target === $("profile-modal")) {
+    $("profile-modal").classList.add("hidden");
+  }
+});
 
 function escapeText(value) {
   return String(value ?? "");
@@ -391,6 +457,29 @@ function connectSocket() {
     console.error("Socket connection error:", err.message);
   });
 
+  socket.on("presence:snapshot", userIds => {
+    const online = new Set(Array.isArray(userIds) ? userIds : []);
+    for (const chat of chats) {
+      for (const member of chat.members || []) {
+        member.isOnline = online.has(member.id);
+      }
+    }
+    if (currentUser) {
+      currentUser.isOnline = online.has(currentUser.id);
+    }
+    if ($("my-presence")) {
+      $("my-presence").textContent = currentUser?.isOnline
+        ? "В сети" : "Не в сети";
+    }
+    updateActiveChatSubtitle();
+    renderChats();
+  });
+
+  socket.on("presence:update", data => {
+    if (!data?.userId) return;
+    setUserPresence(data.userId, data.isOnline);
+  });
+
   socket.on("message:new", message => {
     const chat = chats.find(c => c.id === message.chatId);
 
@@ -544,8 +633,12 @@ function renderChats() {
       item.appendChild(checkbox);
     }
 
+    // ИСПРАВЛЕНИЕ: сначала получаем other, потом используем его
+    const other = getOtherMember(chat);
+
     const avatar = document.createElement("div");
     avatar.className = "chat-list-avatar";
+    if (other?.isOnline) avatar.classList.add("is-online");
     avatar.textContent =
       chatName(chat).charAt(0).toUpperCase();
 
@@ -557,8 +650,6 @@ function renderChats() {
 
     const title = document.createElement("b");
     title.className = "chat-item-title";
-
-    const other = getOtherMember(chat);
 
     if (other) {
       renderVerifiedName(title, other.username, other.isVerified);
@@ -761,10 +852,7 @@ async function openChat(chat) {
   $("chat-avatar").textContent =
     chatName(chat).charAt(0).toUpperCase();
 
-  $("chat-subtitle").textContent =
-    chat.type === "group"
-      ? `${chat.members.length} участников`
-      : "Личный чат";
+  updateActiveChatSubtitle();
 
   $("messages").replaceChildren();
 
@@ -1239,6 +1327,7 @@ $("logout").addEventListener("click", () => {
   badgeAdmin = false;
 
   $("badge-admin-button").classList.add("hidden");
+  $("profile-modal").classList.add("hidden");
   closeBadgeModal();
 
   setAuthMode(false);

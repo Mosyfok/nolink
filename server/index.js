@@ -334,6 +334,9 @@ const io = new Server(server, {
   cors: { origin: corsOrigin }
 });
 
+// Активные Socket.IO-подключения по пользователям (учитывает несколько устройств).
+const onlineUsers = new Map();
+
 async function getUser(id) {
   const result = await pool.query(
     `SELECT id, username, email,
@@ -451,7 +454,10 @@ async function chatPayload(chatId) {
 
   return {
     ...chat,
-    members: membersResult.rows,
+    members: membersResult.rows.map(member => ({
+      ...member,
+      isOnline: onlineUsers.has(member.id)
+    })),
     lastMessage: lastResult.rows[0] || null
   };
 }
@@ -908,58 +914,7 @@ app.get("/api/me", auth, (req, res) => {
   res.json({ user: req.user });
 });
 
-// Однократное назначение NOLINK ID существующему аккаунту test
-app.patch("/api/me/nolink-id", auth, async (req, res) => {
-  try {
-    if (
-      String(req.user.username).trim().toLowerCase() !== "test"
-    ) {
-      return res.status(403).json({
-        error: "Эта операция доступна только аккаунту test"
-      });
-    }
-
-    if (req.user.nolinkId) {
-      return res.status(409).json({
-        error: `У аккаунта уже установлен NOLINK ID: @${req.user.nolinkId}`
-      });
-    }
-
-    const result = await pool.query(
-      `UPDATE users
-       SET nolink_id = $1
-       WHERE id = $2
-         AND nolink_id IS NULL
-       RETURNING id, username,
-                 nolink_id AS "nolinkId"`,
-      ["test123", req.user.id]
-    );
-
-    if (!result.rows[0]) {
-      return res.status(409).json({
-        error: "NOLINK ID уже установлен или аккаунт не найден"
-      });
-    }
-
-    res.json({
-      ok: true,
-      message: "NOLINK ID успешно установлен",
-      user: result.rows[0]
-    });
-  } catch (err) {
-    if (err.code === "23505") {
-      return res.status(409).json({
-        error: "ID @test123 уже занят другим аккаунтом"
-      });
-    }
-
-    console.error("NOLINK ID update error:", err);
-
-    res.status(500).json({
-      error: "Не удалось установить NOLINK ID"
-    });
-  }
-});
+// NOLINK ID задаётся только при регистрации и не имеет API изменения.
 
 // Проверка прав администратора галочек
 app.get("/api/badges/admin", auth, (req, res) => {
@@ -1640,7 +1595,30 @@ io.use(async (socket, next) => {
 });
 
 io.on("connection", socket => {
-  socket.join(`user:${socket.user.id}`);
+  const userId = socket.user.id;
+  const connections = onlineUsers.get(userId) || new Set();
+  const wasOnline = connections.size > 0;
+  connections.add(socket.id);
+  onlineUsers.set(userId, connections);
+
+  socket.join(`user:${userId}`);
+  socket.emit("presence:snapshot", [...onlineUsers.keys()]);
+
+  if (!wasOnline) {
+    io.emit("presence:update", { userId, isOnline: true });
+  }
+
+  socket.on("disconnect", () => {
+    const active = onlineUsers.get(userId);
+    if (!active) return;
+
+    active.delete(socket.id);
+
+    if (active.size === 0) {
+      onlineUsers.delete(userId);
+      io.emit("presence:update", { userId, isOnline: false });
+    }
+  });
 
   socket.on("chat:join", async chatId => {
     try {
