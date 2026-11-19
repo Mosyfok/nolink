@@ -1,3 +1,4 @@
+
 const base = "https://nolink.onrender.com";
 
 let token = localStorage.getItem("nolink-token");
@@ -15,8 +16,18 @@ let verificationEmail = "";
 
 let badgeAdmin = false;
 let badgeSearchTimer = null;
+let userSearchTimer = null;
+
+let replyToMessage = null;
+let typingTimer = null;
+let isTyping = false;
+let typingUsers = new Map();
 
 const $ = id => document.getElementById(id);
+
+/* =========================================================
+   API
+   ========================================================= */
 
 async function api(path, options = {}) {
   const headers = {
@@ -46,6 +57,14 @@ function showError(id, message) {
   if (element) element.textContent = message || "";
 }
 
+function escapeText(value) {
+  return String(value ?? "");
+}
+
+/* =========================================================
+   АВТОРИЗАЦИЯ И ПРОФИЛЬ
+   ========================================================= */
+
 function showAuth() {
   $("auth").classList.remove("hidden");
   $("app").classList.add("hidden");
@@ -67,6 +86,22 @@ function formatNolinkId(value) {
   return id ? `@${id}` : "";
 }
 
+function renderVerifiedName(element, username, isVerified) {
+  element.replaceChildren();
+  element.appendChild(
+    document.createTextNode(username || "Пользователь")
+  );
+
+  if (isVerified === true) {
+    const badge = document.createElement("span");
+    badge.className = "verified-badge";
+    badge.textContent = "✓";
+    badge.title = "Подтверждённый аккаунт";
+    badge.setAttribute("aria-label", "Подтверждённый аккаунт");
+    element.appendChild(badge);
+  }
+}
+
 function showApp() {
   $("auth").classList.add("hidden");
   $("app").classList.remove("hidden");
@@ -82,79 +117,14 @@ function showApp() {
   );
 
   if ($("my-presence")) {
-    $("my-presence").textContent = currentUser.isOnline === false
-      ? "Не в сети" : "В сети";
+    $("my-presence").textContent =
+      currentUser.isOnline === false ? "Не в сети" : "В сети";
   }
 
-  const myNolinkId = $("my-nolink-id");
-
-  if (myNolinkId) {
-    myNolinkId.textContent = formatNolinkId(currentUser.nolinkId);
+  if ($("my-nolink-id")) {
+    $("my-nolink-id").textContent =
+      formatNolinkId(currentUser.nolinkId);
   }
-}
-
-function renderVerifiedName(element, username, isVerified) {
-  element.replaceChildren();
-  element.appendChild(document.createTextNode(username || "Пользователь"));
-
-  if (isVerified === true) {
-    const badge = document.createElement("span");
-    badge.className = "verified-badge";
-    badge.textContent = "✓";
-    badge.title = "Подтверждённый аккаунт";
-    badge.setAttribute("aria-label", "Подтверждённый аккаунт");
-    element.appendChild(badge);
-  }
-}
-
-function chatName(chat) {
-  if (chat.type === "group") {
-    return chat.name || "Группа";
-  }
-
-  const other = (chat.members || []).find(
-    member => member.id !== currentUser.id
-  );
-
-  return other?.username || "Личный чат";
-}
-
-function getOtherMember(chat) {
-  if (!chat || chat.type === "group") return null;
-
-  return (chat.members || []).find(
-    member => member.id !== currentUser.id
-  ) || null;
-}
-
-function setUserPresence(userId, isOnline) {
-  for (const chat of chats) {
-    for (const member of chat.members || []) {
-      if (member.id === userId) member.isOnline = isOnline === true;
-    }
-  }
-
-  if (currentUser?.id === userId) {
-    currentUser.isOnline = isOnline === true;
-    const label = isOnline ? "В сети" : "Не в сети";
-    if ($("my-presence")) $("my-presence").textContent = label;
-    if ($("profile-presence")) $("profile-presence").textContent = label;
-  }
-
-  if (activeChat && getOtherMember(activeChat)?.id === userId) {
-    updateActiveChatSubtitle();
-  }
-
-  renderChats();
-}
-
-function updateActiveChatSubtitle() {
-  if (!activeChat) return;
-  const other = getOtherMember(activeChat);
-
-  $("chat-subtitle").textContent = activeChat.type === "group"
-    ? `${activeChat.members.length} участников`
-    : (other?.isOnline ? "В сети" : "Не в сети");
 }
 
 function openProfile() {
@@ -162,47 +132,51 @@ function openProfile() {
 
   $("profile-avatar").textContent =
     (currentUser.username || "N").charAt(0).toUpperCase();
-  $("profile-username").textContent = currentUser.username || "Пользователь";
+
+  $("profile-username").textContent =
+    currentUser.username || "Пользователь";
+
   $("profile-email").textContent = currentUser.email || "—";
-  $("profile-nolink-id").textContent = formatNolinkId(currentUser.nolinkId) || "Не указан";
-  $("profile-presence").textContent = currentUser.isOnline === false ? "Не в сети" : "В сети";
+
+  $("profile-nolink-id").textContent =
+    formatNolinkId(currentUser.nolinkId) || "Не указан";
+
+  $("profile-presence").textContent =
+    currentUser.isOnline === false ? "Не в сети" : "В сети";
 
   const created = currentUser.createdAt
     ? new Date(currentUser.createdAt)
     : null;
-  $("profile-created").textContent = created && !Number.isNaN(created.getTime())
-    ? created.toLocaleDateString("ru-RU", {
-        day: "2-digit", month: "long", year: "numeric"
-      })
-    : "—";
+
+  $("profile-created").textContent =
+    created && !Number.isNaN(created.getTime())
+      ? created.toLocaleDateString("ru-RU", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric"
+        })
+      : "—";
 
   $("profile-modal").classList.remove("hidden");
 }
 
 $("profile-open").addEventListener("click", openProfile);
+
 $("profile-close").addEventListener("click", () => {
   $("profile-modal").classList.add("hidden");
 });
+
 $("profile-modal").addEventListener("click", event => {
   if (event.target === $("profile-modal")) {
     $("profile-modal").classList.add("hidden");
   }
 });
 
-function escapeText(value) {
-  return String(value ?? "");
-}
-
 function createUserLabel(user) {
   const container = document.createElement("span");
-
   const username = document.createElement("span");
-  renderVerifiedName(
-    username,
-    user.username,
-    user.isVerified
-  );
 
+  renderVerifiedName(username, user.username, user.isVerified);
   container.appendChild(username);
 
   if (user.nolinkId) {
@@ -215,25 +189,6 @@ function createUserLabel(user) {
   return container;
 }
 
-// Проверка прав администратора галочек
-async function loadBadgeAdminStatus() {
-  badgeAdmin = false;
-  $("badge-admin-button").classList.add("hidden");
-
-  try {
-    const result = await api("/api/badges/admin");
-    badgeAdmin = result.isAdmin === true;
-
-    $("badge-admin-button").classList.toggle(
-      "hidden",
-      !badgeAdmin
-    );
-  } catch (err) {
-    console.error("Не удалось проверить права управления галочками:", err);
-  }
-}
-
-// Переключение формы входа и регистрации
 function setAuthMode(mode) {
   registerMode = mode;
   verificationMode = false;
@@ -257,22 +212,18 @@ function setAuthMode(mode) {
   $("username").classList.toggle("hidden", !registerMode);
   $("username-label").classList.toggle("hidden", !registerMode);
 
-  const nolinkId = $("nolink-id");
-  const nolinkIdLabel = $("nolink-id-label");
-  const nolinkIdHint = $("nolink-id-hint");
-
-  if (nolinkId) {
-    nolinkId.classList.toggle("hidden", !registerMode);
-    nolinkId.required = registerMode;
-    nolinkId.value = "";
+  if ($("nolink-id")) {
+    $("nolink-id").classList.toggle("hidden", !registerMode);
+    $("nolink-id").required = registerMode;
+    $("nolink-id").value = "";
   }
 
-  if (nolinkIdLabel) {
-    nolinkIdLabel.classList.toggle("hidden", !registerMode);
+  if ($("nolink-id-label")) {
+    $("nolink-id-label").classList.toggle("hidden", !registerMode);
   }
 
-  if (nolinkIdHint) {
-    nolinkIdHint.classList.toggle("hidden", !registerMode);
+  if ($("nolink-id-hint")) {
+    $("nolink-id-hint").classList.toggle("hidden", !registerMode);
   }
 
   $("username").required = registerMode;
@@ -290,20 +241,18 @@ $("auth-switch").addEventListener("click", () => {
   setAuthMode(!registerMode);
 });
 
-// Возврат к регистрации
 $("back-to-auth").addEventListener("click", () => {
   setAuthMode(true);
 });
 
-// Вход и начало регистрации
 $("auth-form").addEventListener("submit", async event => {
   event.preventDefault();
   showError("auth-error", "");
 
   const email = $("email").value.trim();
   const password = $("password").value;
-
   const submit = $("auth-submit");
+
   submit.disabled = true;
 
   try {
@@ -311,16 +260,12 @@ $("auth-form").addEventListener("submit", async event => {
       ? "/api/auth/register"
       : "/api/auth/login";
 
-    const body = {
-      email,
-      password
-    };
+    const body = { email, password };
 
     if (registerMode) {
       body.username = $("username").value.trim();
 
       const enteredId = $("nolink-id").value;
-      const normalizedId = normalizeNolinkId(enteredId);
 
       if (!isValidNolinkId(enteredId)) {
         showError(
@@ -330,7 +275,7 @@ $("auth-form").addEventListener("submit", async event => {
         return;
       }
 
-      body.nolinkId = `@${normalizedId}`;
+      body.nolinkId = `@${normalizeNolinkId(enteredId)}`;
     }
 
     const result = await api(path, {
@@ -340,12 +285,11 @@ $("auth-form").addEventListener("submit", async event => {
 
     if (registerMode) {
       verificationEmail = result.email || email.toLowerCase();
-      $("verify-email").textContent = verificationEmail;
 
+      $("verify-email").textContent = verificationEmail;
       $("auth-form").classList.add("hidden");
       $("email-verify-form").classList.remove("hidden");
       $("auth-switch").classList.add("hidden");
-
       $("auth-title").textContent = "Подтверждение почты";
       $("verification-code").value = "";
       $("verification-code").focus();
@@ -361,7 +305,6 @@ $("auth-form").addEventListener("submit", async event => {
 
     token = result.token;
     currentUser = result.user;
-
     localStorage.setItem("nolink-token", token);
 
     await enterApp();
@@ -372,7 +315,6 @@ $("auth-form").addEventListener("submit", async event => {
   }
 });
 
-// Подтверждение кода и завершение регистрации
 $("email-verify-form").addEventListener("submit", async event => {
   event.preventDefault();
   showError("auth-error", "");
@@ -398,7 +340,6 @@ $("email-verify-form").addEventListener("submit", async event => {
 
     token = result.token;
     currentUser = result.user;
-
     localStorage.setItem("nolink-token", token);
 
     verificationMode = false;
@@ -412,7 +353,6 @@ $("email-verify-form").addEventListener("submit", async event => {
   }
 });
 
-// Повторная отправка кода
 $("resend-code").addEventListener("click", async () => {
   showError("auth-error", "");
 
@@ -422,9 +362,7 @@ $("resend-code").addEventListener("click", async () => {
   try {
     const result = await api("/api/auth/resend-code", {
       method: "POST",
-      body: JSON.stringify({
-        email: verificationEmail
-      })
+      body: JSON.stringify({ email: verificationEmail })
     });
 
     showError("auth-error", result.message || "Новый код отправлен.");
@@ -435,9 +373,247 @@ $("resend-code").addEventListener("click", async () => {
   }
 });
 
-// Запуск приложения
+/* =========================================================
+   ИНТЕРФЕЙС НОВЫХ ФУНКЦИЙ
+   ========================================================= */
+
+function addMessageStyles() {
+  if ($("nolink-message-styles")) return;
+
+  const style = document.createElement("style");
+  style.id = "nolink-message-styles";
+
+  style.textContent = `
+    .message-tools {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .message-tools button,
+    .reply-preview button {
+      border: 0;
+      border-radius: 7px;
+      padding: 5px 9px;
+      cursor: pointer;
+      background: rgba(128,128,128,.15);
+      color: inherit;
+      font-size: 12px;
+    }
+
+    .message-tools button:hover,
+    .reply-preview button:hover {
+      background: rgba(128,128,128,.28);
+    }
+
+    .message-reply {
+      border-left: 3px solid #7298d5;
+      padding: 5px 8px;
+      margin-bottom: 7px;
+      border-radius: 4px;
+      background: rgba(128,128,128,.12);
+      font-size: 12px;
+      cursor: pointer;
+      overflow-wrap: anywhere;
+    }
+
+    .message-edited,
+    .message-status {
+      opacity: .7;
+      font-size: 11px;
+      margin-left: 5px;
+    }
+
+    .reply-preview {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 12px;
+      margin: 5px 0;
+      border-left: 3px solid #7298d5;
+      background: rgba(128,128,128,.12);
+      border-radius: 7px;
+      font-size: 12px;
+    }
+
+    .reply-preview.visible {
+      display: flex;
+    }
+
+    .reply-preview-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #typing-indicator {
+      min-height: 16px;
+      padding: 0 12px;
+      font-size: 12px;
+      opacity: .7;
+    }
+
+    .message-deleted {
+      opacity: .7;
+      font-style: italic;
+    }
+  `;
+
+  document.head.appendChild(style);
+}
+
+function createExtraInterface() {
+  addMessageStyles();
+
+  const composer = $("send-form");
+  if (!composer) return;
+
+  if (!$("reply-preview")) {
+    const preview = document.createElement("div");
+    preview.id = "reply-preview";
+    preview.className = "reply-preview";
+
+    const text = document.createElement("span");
+    text.id = "reply-preview-text";
+    text.className = "reply-preview-text";
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Отмена";
+    cancel.addEventListener("click", clearReply);
+
+    preview.append(text, cancel);
+    composer.parentNode.insertBefore(preview, composer);
+  }
+
+  if (!$("typing-indicator")) {
+    const indicator = document.createElement("div");
+    indicator.id = "typing-indicator";
+
+    const subtitle = $("chat-subtitle");
+
+    if (subtitle) {
+      subtitle.parentNode.insertBefore(
+        indicator,
+        subtitle.nextSibling
+      );
+    } else {
+      composer.parentNode.insertBefore(indicator, composer);
+    }
+  }
+}
+
+function clearReply() {
+  replyToMessage = null;
+
+  const preview = $("reply-preview");
+  if (preview) preview.classList.remove("visible");
+
+  const text = $("reply-preview-text");
+  if (text) text.textContent = "";
+}
+
+function setReply(message) {
+  if (!message || message.deletedAt) return;
+
+  replyToMessage = message;
+
+  const author = message.userId === currentUser.id
+    ? "Вы"
+    : (message.username || "Пользователь");
+
+  const text = $("reply-preview-text");
+
+  if (text) {
+    text.textContent =
+      `Ответ на ${author}: ${message.content || "Фотография"}`;
+  }
+
+  $("reply-preview").classList.add("visible");
+  $("message-input").focus();
+}
+
+/* =========================================================
+   СТАТУСЫ ПРОЧТЕНИЯ
+   ========================================================= */
+
+function getReadStatus(message) {
+  if (message.userId !== currentUser.id) return "";
+
+  const readers = (message.readBy || []).filter(
+    item => item.userId !== currentUser.id
+  );
+
+  if (!readers.length) return "✓ Отправлено";
+
+  if (activeChat?.type === "group") {
+    return `✓✓ Прочитано (${readers.length})`;
+  }
+
+  return "✓✓ Прочитано";
+}
+
+function updateMessageStatus(messageId, readBy) {
+  const wrapper = [...document.querySelectorAll("[data-message-id]")]
+    .find(element =>
+      element.dataset.messageId === String(messageId)
+    );
+
+  if (!wrapper) return;
+
+  let message;
+
+  try {
+    message = JSON.parse(wrapper.dataset.message || "{}");
+  } catch {
+    return;
+  }
+
+  message.readBy = Array.isArray(readBy) ? readBy : [];
+
+  wrapper.dataset.message = JSON.stringify(message);
+  wrapper.dataset.readBy = JSON.stringify(message.readBy);
+
+  const status = wrapper.querySelector(".message-status");
+
+  if (status) {
+    status.textContent = getReadStatus(message);
+  }
+}
+
+/* =========================================================
+   ПРАВА АДМИНИСТРАТОРА ГАЛОЧЕК
+   ========================================================= */
+
+async function loadBadgeAdminStatus() {
+  badgeAdmin = false;
+  $("badge-admin-button").classList.add("hidden");
+
+  try {
+    const result = await api("/api/badges/admin");
+    badgeAdmin = result.isAdmin === true;
+
+    $("badge-admin-button").classList.toggle(
+      "hidden",
+      !badgeAdmin
+    );
+  } catch (err) {
+    console.error(
+      "Не удалось проверить права управления галочками:",
+      err
+    );
+  }
+}
+
+/* =========================================================
+   ЗАПУСК И SOCKET.IO
+   ========================================================= */
+
 async function enterApp() {
   showApp();
+  createExtraInterface();
   connectSocket();
 
   await loadBadgeAdminStatus();
@@ -445,13 +621,9 @@ async function enterApp() {
 }
 
 function connectSocket() {
-  if (socket) {
-    socket.disconnect();
-  }
+  if (socket) socket.disconnect();
 
-  socket = io(base, {
-    auth: { token }
-  });
+  socket = io(base, { auth: { token } });
 
   socket.on("connect_error", err => {
     console.error("Socket connection error:", err.message);
@@ -459,18 +631,23 @@ function connectSocket() {
 
   socket.on("presence:snapshot", userIds => {
     const online = new Set(Array.isArray(userIds) ? userIds : []);
+
     for (const chat of chats) {
       for (const member of chat.members || []) {
         member.isOnline = online.has(member.id);
       }
     }
+
     if (currentUser) {
       currentUser.isOnline = online.has(currentUser.id);
     }
+
     if ($("my-presence")) {
       $("my-presence").textContent = currentUser?.isOnline
-        ? "В сети" : "Не в сети";
+        ? "В сети"
+        : "Не в сети";
     }
+
     updateActiveChatSubtitle();
     renderChats();
   });
@@ -481,7 +658,9 @@ function connectSocket() {
   });
 
   socket.on("message:new", message => {
-    const chat = chats.find(c => c.id === message.chatId);
+    if (!message) return;
+
+    const chat = chats.find(item => item.id === message.chatId);
 
     if (chat) {
       chat.lastMessage = message;
@@ -491,7 +670,82 @@ function connectSocket() {
 
     if (activeChat?.id === message.chatId) {
       appendMessage(message);
+
+      if (
+        message.userId !== currentUser.id &&
+        socket?.connected
+      ) {
+        socket.emit("chat:read", message.chatId);
+      }
     }
+  });
+
+  socket.on("messages:read", data => {
+    if (!data || !Array.isArray(data.messageIds)) return;
+
+    for (const messageId of data.messageIds) {
+      const wrapper = [...document.querySelectorAll("[data-message-id]")]
+        .find(element =>
+          element.dataset.messageId === String(messageId)
+        );
+
+      if (!wrapper) continue;
+
+      let message;
+
+      try {
+        message = JSON.parse(wrapper.dataset.message || "{}");
+      } catch {
+        continue;
+      }
+
+      const readBy = Array.isArray(message.readBy)
+        ? [...message.readBy]
+        : [];
+
+      if (!readBy.some(item => item.userId === data.userId)) {
+        readBy.push({
+          userId: data.userId,
+          readAt: data.readAt
+        });
+      }
+
+      updateMessageStatus(messageId, readBy);
+    }
+  });
+
+  socket.on("message:updated", message => {
+    if (!message) return;
+
+    const chat = chats.find(item => item.id === message.chatId);
+
+    if (chat?.lastMessage?.id === message.id) {
+      chat.lastMessage = message;
+      renderChats();
+    }
+
+    if (activeChat?.id === message.chatId) {
+      replaceMessage(message);
+    }
+  });
+
+  socket.on("typing:update", data => {
+    if (!data || !activeChat || data.chatId !== activeChat.id) {
+      return;
+    }
+
+    if (data.userId === currentUser.id) return;
+
+    if (data.isTyping) {
+      typingUsers.set(
+        data.userId,
+        data.username || "Пользователь"
+      );
+    } else {
+      typingUsers.delete(data.userId);
+    }
+
+    renderTypingIndicator();
   });
 
   socket.on("chat:created", async () => {
@@ -503,7 +757,11 @@ function connectSocket() {
     selectedChats.delete(chatId);
 
     if (activeChat?.id === chatId) {
+      stopTyping();
       activeChat = null;
+      typingUsers.clear();
+      clearReply();
+
       $("conversation").classList.add("hidden");
       $("empty-state").classList.remove("hidden");
     }
@@ -515,7 +773,6 @@ function connectSocket() {
     if (!data) return;
 
     const userId = data.userId || data.id;
-
     if (!userId) return;
 
     for (const chat of chats) {
@@ -532,6 +789,7 @@ function connectSocket() {
 
     if (currentUser.id === userId) {
       currentUser.isVerified = data.isVerified === true;
+
       renderVerifiedName(
         $("my-name"),
         currentUser.username,
@@ -542,8 +800,9 @@ function connectSocket() {
     renderChats();
 
     if (activeChat) {
-      const chatId = activeChat.id;
-      const updatedChat = chats.find(chat => chat.id === chatId);
+      const updatedChat = chats.find(
+        chat => chat.id === activeChat.id
+      );
 
       if (updatedChat) {
         activeChat = updatedChat;
@@ -553,7 +812,128 @@ function connectSocket() {
   });
 }
 
-// Загрузка чатов
+/* =========================================================
+   ПРИСУТСТВИЕ И СТАТУС ЧАТА
+   ========================================================= */
+
+function setUserPresence(userId, isOnline) {
+  for (const chat of chats) {
+    for (const member of chat.members || []) {
+      if (member.id === userId) {
+        member.isOnline = isOnline === true;
+      }
+    }
+  }
+
+  if (currentUser?.id === userId) {
+    currentUser.isOnline = isOnline === true;
+
+    const label = isOnline ? "В сети" : "Не в сети";
+
+    if ($("my-presence")) $("my-presence").textContent = label;
+    if ($("profile-presence")) {
+      $("profile-presence").textContent = label;
+    }
+  }
+
+  if (activeChat && getOtherMember(activeChat)?.id === userId) {
+    updateActiveChatSubtitle();
+  }
+
+  renderChats();
+}
+
+function chatName(chat) {
+  if (chat.type === "group") {
+    return chat.name || "Группа";
+  }
+
+  const other = (chat.members || []).find(
+    member => member.id !== currentUser.id
+  );
+
+  return other?.username || "Личный чат";
+}
+
+function getOtherMember(chat) {
+  if (!chat || chat.type === "group") return null;
+
+  return (chat.members || []).find(
+    member => member.id !== currentUser.id
+  ) || null;
+}
+
+function updateActiveChatSubtitle() {
+  if (!activeChat) return;
+
+  const other = getOtherMember(activeChat);
+
+  $("chat-subtitle").textContent =
+    activeChat.type === "group"
+      ? `${(activeChat.members || []).length} участников`
+      : (other?.isOnline ? "В сети" : "Не в сети");
+}
+
+/* =========================================================
+   ИНДИКАТОР ПЕЧАТИ
+   ========================================================= */
+
+function renderTypingIndicator() {
+  const indicator = $("typing-indicator");
+  if (!indicator) return;
+
+  const names = [...typingUsers.values()];
+
+  if (!names.length) {
+    indicator.textContent = "";
+  } else if (names.length === 1) {
+    indicator.textContent = `${names[0]} печатает…`;
+  } else {
+    indicator.textContent = "Несколько человек печатают…";
+  }
+}
+
+function startTyping() {
+  if (!activeChat || !socket?.connected) return;
+
+  if (!isTyping) {
+    isTyping = true;
+
+    // Сервер ожидает строку chatId, а не объект { chatId }.
+    socket.emit("typing:start", activeChat.id);
+  }
+
+  clearTimeout(typingTimer);
+
+  typingTimer = setTimeout(() => {
+    stopTyping();
+  }, 1500);
+}
+
+function stopTyping() {
+  clearTimeout(typingTimer);
+  typingTimer = null;
+
+  if (isTyping && activeChat && socket?.connected) {
+    // Сервер ожидает строку chatId, а не объект { chatId }.
+    socket.emit("typing:stop", activeChat.id);
+  }
+
+  isTyping = false;
+}
+
+$("message-input").addEventListener("input", () => {
+  if ($("message-input").value.trim()) {
+    startTyping();
+  } else {
+    stopTyping();
+  }
+});
+
+/* =========================================================
+   ЗАГРУЗКА И ОТОБРАЖЕНИЕ ЧАТОВ
+   ========================================================= */
+
 async function loadChats() {
   try {
     chats = await api("/api/chats");
@@ -563,15 +943,11 @@ async function loadChats() {
   }
 }
 
-// Форматирование времени
 function formatChatTime(value) {
   if (!value) return "";
 
   const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
+  if (Number.isNaN(date.getTime())) return "";
 
   const now = new Date();
 
@@ -580,20 +956,17 @@ function formatChatTime(value) {
     date.getMonth() === now.getMonth() &&
     date.getFullYear() === now.getFullYear();
 
-  if (sameDay) {
-    return date.toLocaleTimeString("ru-RU", {
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-  }
-
-  return date.toLocaleDateString("ru-RU", {
-    day: "2-digit",
-    month: "2-digit"
-  });
+  return sameDay
+    ? date.toLocaleTimeString("ru-RU", {
+        hour: "2-digit",
+        minute: "2-digit"
+      })
+    : date.toLocaleDateString("ru-RU", {
+        day: "2-digit",
+        month: "2-digit"
+      });
 }
 
-// Список чатов
 function renderChats() {
   const list = $("chat-list");
   list.replaceChildren();
@@ -633,14 +1006,14 @@ function renderChats() {
       item.appendChild(checkbox);
     }
 
-    // ИСПРАВЛЕНИЕ: сначала получаем other, потом используем его
     const other = getOtherMember(chat);
 
     const avatar = document.createElement("div");
     avatar.className = "chat-list-avatar";
+
     if (other?.isOnline) avatar.classList.add("is-online");
-    avatar.textContent =
-      chatName(chat).charAt(0).toUpperCase();
+
+    avatar.textContent = chatName(chat).charAt(0).toUpperCase();
 
     const content = document.createElement("div");
     content.className = "chat-item-content";
@@ -661,9 +1034,7 @@ function renderChats() {
     time.className = "chat-item-time";
 
     if (chat.lastMessage?.createdAt) {
-      time.textContent = formatChatTime(
-        chat.lastMessage.createdAt
-      );
+      time.textContent = formatChatTime(chat.lastMessage.createdAt);
     }
 
     top.append(title, time);
@@ -673,6 +1044,8 @@ function renderChats() {
 
     if (!chat.lastMessage) {
       preview.textContent = "Нет сообщений";
+    } else if (chat.lastMessage.deletedAt) {
+      preview.textContent = "Сообщение удалено";
     } else if (chat.lastMessage.attachmentId) {
       preview.textContent = "📷 Фотография";
     } else {
@@ -712,7 +1085,10 @@ function renderChats() {
 
 $("search").addEventListener("input", renderChats);
 
-// Выбор чатов
+/* =========================================================
+   ВЫБОР И УДАЛЕНИЕ ЧАТОВ
+   ========================================================= */
+
 function toggleSelected(chatId) {
   if (selectedChats.has(chatId)) {
     selectedChats.delete(chatId);
@@ -729,9 +1105,7 @@ function updateSelectionToolbar() {
     !selectionMode
   );
 
-  $("select-chats").textContent = selectionMode
-    ? "×"
-    : "☑";
+  $("select-chats").textContent = selectionMode ? "×" : "☑";
 
   $("select-chats").title = selectionMode
     ? "Завершить выбор"
@@ -764,7 +1138,6 @@ $("select-all-chats").addEventListener("click", () => {
   renderChats();
 });
 
-// Удаление чатов
 function closeDeleteModal() {
   $("delete-modal").classList.add("hidden");
   pendingDelete = [];
@@ -801,7 +1174,11 @@ async function deleteChats(mode) {
       selectedChats.delete(chatId);
 
       if (activeChat?.id === chatId) {
+        stopTyping();
         activeChat = null;
+        typingUsers.clear();
+        clearReply();
+
         $("conversation").classList.add("hidden");
         $("empty-state").classList.remove("hidden");
       }
@@ -813,13 +1190,9 @@ async function deleteChats(mode) {
   renderChats();
 
   if (errors.length) {
-    showError(
-      "delete-error",
-      [...new Set(errors)].join(". ")
-    );
+    showError("delete-error", [...new Set(errors)].join(". "));
   } else {
     closeDeleteModal();
-
     selectionMode = false;
     selectedChats.clear();
     renderChats();
@@ -834,8 +1207,18 @@ $("delete-everyone").addEventListener("click", () => {
   deleteChats("everyone");
 });
 
-// Открытие чата
+/* =========================================================
+   ОТКРЫТИЕ ЧАТА
+   ========================================================= */
+
 async function openChat(chat) {
+  if (activeChat?.id !== chat.id) {
+    stopTyping();
+    typingUsers.clear();
+    renderTypingIndicator();
+    clearReply();
+  }
+
   activeChat = chat;
 
   $("empty-state").classList.add("hidden");
@@ -853,7 +1236,6 @@ async function openChat(chat) {
     chatName(chat).charAt(0).toUpperCase();
 
   updateActiveChatSubtitle();
-
   $("messages").replaceChildren();
 
   if (socket?.connected) {
@@ -872,29 +1254,30 @@ async function openChat(chat) {
     $("messages").replaceChildren();
 
     for (const message of messages) {
-      await appendMessage(message);
+      if (activeChat?.id !== chat.id) return;
+      appendMessage(message);
     }
 
     scrollMessagesToBottom();
+
+    if (socket?.connected) {
+      socket.emit("chat:read", chat.id);
+    }
   } catch (err) {
     console.error("Ошибка загрузки сообщений:", err);
   }
 }
 
-// Создание сообщения
-async function appendMessage(message) {
-  const container = $("messages");
+/* =========================================================
+   СОЗДАНИЕ ЭЛЕМЕНТА СООБЩЕНИЯ
+   ========================================================= */
 
-  if (
-    [...container.querySelectorAll("[data-message-id]")]
-      .some(el => el.dataset.messageId === message.id)
-  ) {
-    return;
-  }
-
+function createMessageElement(message) {
   const wrapper = document.createElement("div");
   wrapper.className = "message";
-  wrapper.dataset.messageId = message.id;
+  wrapper.dataset.messageId = String(message.id);
+  wrapper.dataset.message = JSON.stringify(message);
+  wrapper.dataset.readBy = JSON.stringify(message.readBy || []);
 
   if (message.userId === currentUser.id) {
     wrapper.classList.add("mine");
@@ -904,11 +1287,7 @@ async function appendMessage(message) {
   author.className = "message-author";
 
   if (message.userId === currentUser.id) {
-    renderVerifiedName(
-      author,
-      "Вы",
-      currentUser.isVerified
-    );
+    renderVerifiedName(author, "Вы", currentUser.isVerified);
   } else {
     renderVerifiedName(
       author,
@@ -920,37 +1299,80 @@ async function appendMessage(message) {
   const content = document.createElement("div");
   content.className = "message-content";
 
-  if (message.attachmentId) {
+  if (message.replyTo) {
+    const reply = document.createElement("div");
+    reply.className = "message-reply";
+
+    const replyAuthor =
+      message.replyTo.username || "Пользователь";
+
+    const replyContent = message.replyTo.deletedAt
+      ? "Сообщение удалено"
+      : (message.replyTo.content || "Фотография");
+
+    reply.textContent = `${replyAuthor}: ${replyContent}`;
+
+    reply.addEventListener("click", () => {
+      const target = [...document.querySelectorAll("[data-message-id]")]
+        .find(element =>
+          element.dataset.messageId ===
+          String(message.replyTo.id)
+        );
+
+      if (target) {
+        target.scrollIntoView({
+          behavior: "smooth",
+          block: "center"
+        });
+      }
+    });
+
+    content.appendChild(reply);
+  }
+
+  if (message.deletedAt) {
+    const deleted = document.createElement("span");
+    deleted.className = "message-deleted";
+    deleted.textContent = "Сообщение удалено";
+    content.appendChild(deleted);
+  } else if (message.attachmentId) {
     const image = document.createElement("img");
     image.className = "message-image";
     image.alt = "Фотография";
     image.loading = "lazy";
 
-    try {
-      const response = await fetch(
-        `${base}/api/attachments/${encodeURIComponent(message.attachmentId)}`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
+    content.appendChild(image);
+
+    fetch(
+      `${base}/api/attachments/${encodeURIComponent(message.attachmentId)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`
         }
-      );
-
-      if (!response.ok) {
-        throw new Error("Не удалось загрузить фотографию");
       }
+    )
+      .then(response => {
+        if (!response.ok) {
+          throw new Error("Не удалось загрузить фотографию");
+        }
 
-      const blob = await response.blob();
-      image.src = await blobToDataUrl(blob);
-      content.appendChild(image);
-    } catch (err) {
-      const errorText = document.createElement("span");
-      errorText.textContent =
-        "📷 Не удалось загрузить фотографию";
-      content.appendChild(errorText);
-    }
+        return response.blob();
+      })
+      .then(blob => blobToDataUrl(blob))
+      .then(dataUrl => {
+        image.src = dataUrl;
+      })
+      .catch(() => {
+        image.remove();
+
+        const errorText = document.createElement("span");
+        errorText.textContent = "📷 Не удалось загрузить фотографию";
+        content.appendChild(errorText);
+      });
   } else {
-    content.textContent = escapeText(message.content);
+    content.appendChild(
+      document.createTextNode(escapeText(message.content))
+    );
   }
 
   const time = document.createElement("small");
@@ -966,14 +1388,198 @@ async function appendMessage(message) {
       });
 
   wrapper.append(author, content, time);
-  container.appendChild(wrapper);
+
+  if (message.editedAt && !message.deletedAt) {
+    const edited = document.createElement("small");
+    edited.className = "message-edited";
+    edited.textContent = "изменено";
+    wrapper.appendChild(edited);
+  }
+
+  if (message.userId === currentUser.id) {
+    const status = document.createElement("small");
+    status.className = "message-status";
+    status.textContent = getReadStatus(message);
+    wrapper.appendChild(status);
+  }
+
+  const tools = document.createElement("div");
+  tools.className = "message-tools";
+
+  if (!message.deletedAt) {
+    const replyButton = document.createElement("button");
+    replyButton.type = "button";
+    replyButton.textContent = "Ответить";
+    replyButton.addEventListener("click", () => {
+      setReply(message);
+    });
+
+    tools.appendChild(replyButton);
+  }
+
+  if (
+    message.userId === currentUser.id &&
+    !message.deletedAt
+  ) {
+    if (!message.attachmentId) {
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.textContent = "Изменить";
+
+      editButton.addEventListener("click", () => {
+        editMessage(message);
+      });
+
+      tools.appendChild(editButton);
+    }
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.textContent = "Удалить";
+
+    deleteButton.addEventListener("click", () => {
+      deleteMessage(message);
+    });
+
+    tools.appendChild(deleteButton);
+  }
+
+  if (tools.children.length) {
+    wrapper.appendChild(tools);
+  }
+
+  return wrapper;
+}
+
+function appendMessage(message) {
+  if (!message || !$("messages")) return;
+
+  const existing = [...$("messages").querySelectorAll("[data-message-id]")]
+    .some(element =>
+      element.dataset.messageId === String(message.id)
+    );
+
+  if (existing) return;
+
+  const wrapper = createMessageElement(message);
+  $("messages").appendChild(wrapper);
 
   scrollMessagesToBottom();
 }
 
+/* =========================================================
+   РЕДАКТИРОВАНИЕ СООБЩЕНИЙ
+   ========================================================= */
+
+function editMessage(message) {
+  if (!socket?.connected || !activeChat) {
+    alert("Нет подключения к серверу");
+    return;
+  }
+
+  const newContent = prompt(
+    "Измени текст сообщения:",
+    message.content || ""
+  );
+
+  if (newContent === null) return;
+
+  const content = newContent.trim();
+
+  if (!content) {
+    alert("Сообщение не может быть пустым");
+    return;
+  }
+
+  if (content.length > 4000) {
+    alert("Сообщение слишком длинное");
+    return;
+  }
+
+  socket.emit(
+    "message:edit",
+    {
+      chatId: activeChat.id,
+      messageId: message.id,
+      content
+    },
+    (error, updated) => {
+      if (error) {
+        alert(error);
+        return;
+      }
+
+      if (updated) {
+        replaceMessage(updated);
+      }
+    }
+  );
+}
+
+/* =========================================================
+   УДАЛЕНИЕ СООБЩЕНИЙ
+   ========================================================= */
+
+function deleteMessage(message) {
+  if (!socket?.connected || !activeChat) {
+    alert("Нет подключения к серверу");
+    return;
+  }
+
+  if (!confirm("Удалить это сообщение?")) return;
+
+  socket.emit(
+    "message:delete",
+    {
+      chatId: activeChat.id,
+      messageId: message.id
+    },
+    (error, updated) => {
+      if (error) {
+        alert(error);
+        return;
+      }
+
+      if (updated) {
+        replaceMessage(updated);
+      }
+    }
+  );
+}
+
+/* =========================================================
+   ЗАМЕНА СООБЩЕНИЯ БЕЗ ПЕРЕМЕЩЕНИЯ В КОНЕЦ
+   ========================================================= */
+
+function replaceMessage(message) {
+  if (!message || activeChat?.id !== message.chatId) return;
+
+  const old = [...$("messages").querySelectorAll("[data-message-id]")]
+    .find(element =>
+      element.dataset.messageId === String(message.id)
+    );
+
+  const replacement = createMessageElement(message);
+
+  if (old) {
+    old.replaceWith(replacement);
+  } else {
+    $("messages").appendChild(replacement);
+  }
+
+  const chat = chats.find(item => item.id === message.chatId);
+
+  if (chat?.lastMessage?.id === message.id) {
+    chat.lastMessage = message;
+    renderChats();
+  }
+}
+
 function scrollMessagesToBottom() {
   const container = $("messages");
-  container.scrollTop = container.scrollHeight;
+  if (container) {
+    container.scrollTop = container.scrollHeight;
+  }
 }
 
 function blobToDataUrl(blob) {
@@ -987,7 +1593,10 @@ function blobToDataUrl(blob) {
   });
 }
 
-// Отправка текстового сообщения
+/* =========================================================
+   ОТПРАВКА СООБЩЕНИЙ И ОТВЕТОВ
+   ========================================================= */
+
 $("send-form").addEventListener("submit", event => {
   event.preventDefault();
 
@@ -997,24 +1606,44 @@ $("send-form").addEventListener("submit", event => {
     return;
   }
 
+  const chatId = activeChat.id;
+  const replyToMessageId = replyToMessage?.id || null;
+
   $("message-input").value = "";
+  stopTyping();
 
   socket.emit(
     "message:send",
     {
-      chatId: activeChat.id,
-      content
+      chatId,
+      content,
+      replyToMessageId
     },
-    error => {
+    (error, sentMessage) => {
       if (error) {
         alert(error);
         $("message-input").value = content;
+        return;
+      }
+
+      clearReply();
+
+      if (sentMessage) {
+        const chat = chats.find(item => item.id === chatId);
+
+        if (chat) {
+          chat.lastMessage = sentMessage;
+          renderChats();
+        }
       }
     }
   );
 });
 
-// Фотографии
+/* =========================================================
+   ФОТОГРАФИИ
+   ========================================================= */
+
 $("photo-button").addEventListener("click", () => {
   if (!activeChat) {
     alert("Сначала открой чат");
@@ -1069,7 +1698,10 @@ $("photo-input").addEventListener("change", async () => {
   }
 });
 
-// Создание чата
+/* =========================================================
+   СОЗДАНИЕ ЧАТОВ
+   ========================================================= */
+
 function openNewChatModal() {
   $("modal").classList.remove("hidden");
   showError("modal-error", "");
@@ -1083,11 +1715,10 @@ $("new-chat").addEventListener("click", openNewChatModal);
 $("empty-new").addEventListener("click", openNewChatModal);
 $("modal-close").addEventListener("click", closeNewChatModal);
 
-// Вкладки
 document.querySelectorAll(".tab").forEach(tab => {
   tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach(t => {
-      t.classList.remove("active");
+    document.querySelectorAll(".tab").forEach(item => {
+      item.classList.remove("active");
     });
 
     tab.classList.add("active");
@@ -1100,9 +1731,6 @@ document.querySelectorAll(".tab").forEach(tab => {
     showError("modal-error", "");
   });
 });
-
-// Поиск пользователей
-let userSearchTimer = null;
 
 $("user-search").addEventListener("input", () => {
   clearTimeout(userSearchTimer);
@@ -1125,22 +1753,19 @@ async function searchUsers() {
     for (const user of users) {
       const button = document.createElement("button");
       button.className = "user-result";
-
       button.appendChild(createUserLabel(user));
 
       button.addEventListener("click", async () => {
         try {
           const chat = await api("/api/chats/direct", {
             method: "POST",
-            body: JSON.stringify({
-              userId: user.id
-            })
+            body: JSON.stringify({ userId: user.id })
           });
 
           await loadChats();
           closeNewChatModal();
 
-          const found = chats.find(c => c.id === chat.id);
+          const found = chats.find(item => item.id === chat.id);
           if (found) await openChat(found);
         } catch (err) {
           showError("modal-error", err.message);
@@ -1160,7 +1785,10 @@ async function searchUsers() {
   }
 }
 
-// Создание группы
+/* =========================================================
+   СОЗДАНИЕ ГРУППЫ
+   ========================================================= */
+
 $("create-group").addEventListener("click", async () => {
   showError("modal-error", "");
 
@@ -1168,16 +1796,13 @@ $("create-group").addEventListener("click", async () => {
 
   const usernames = $("group-members").value
     .split(",")
-    .map(name => name.trim())
+    .map(value => value.trim())
     .filter(Boolean);
 
   try {
     const chat = await api("/api/chats/group", {
       method: "POST",
-      body: JSON.stringify({
-        name,
-        usernames
-      })
+      body: JSON.stringify({ name, usernames })
     });
 
     $("group-name").value = "";
@@ -1186,20 +1811,24 @@ $("create-group").addEventListener("click", async () => {
     await loadChats();
     closeNewChatModal();
 
-    const found = chats.find(c => c.id === chat.id);
+    const found = chats.find(item => item.id === chat.id);
     if (found) await openChat(found);
   } catch (err) {
     showError("modal-error", err.message);
   }
 });
 
-// Окно управления галочками
+/* =========================================================
+   УПРАВЛЕНИЕ ГАЛОЧКАМИ
+   ========================================================= */
+
 function openBadgeModal() {
   if (!badgeAdmin) return;
 
   $("badge-modal").classList.remove("hidden");
   $("badge-user-search").value = "";
   $("badge-user-results").replaceChildren();
+
   showError("badge-error", "");
   $("badge-user-search").focus();
 }
@@ -1208,6 +1837,7 @@ function closeBadgeModal() {
   $("badge-modal").classList.add("hidden");
   $("badge-user-search").value = "";
   $("badge-user-results").replaceChildren();
+
   showError("badge-error", "");
 }
 
@@ -1288,9 +1918,7 @@ async function searchBadgeUsers() {
 
           showError(
             "badge-error",
-            user.isVerified
-              ? "Галочка выдана."
-              : "Галочка снята."
+            user.isVerified ? "Галочка выдана." : "Галочка снята."
           );
         } catch (err) {
           showError("badge-error", err.message);
@@ -1313,9 +1941,17 @@ async function searchBadgeUsers() {
   }
 }
 
-// Выход
+/* =========================================================
+   ВЫХОД
+   ========================================================= */
+
 $("logout").addEventListener("click", () => {
-  if (socket) socket.disconnect();
+  stopTyping();
+
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+  }
 
   localStorage.removeItem("nolink-token");
 
@@ -1323,18 +1959,24 @@ $("logout").addEventListener("click", () => {
   currentUser = null;
   activeChat = null;
   chats = [];
+
   selectedChats.clear();
   badgeAdmin = false;
+  replyToMessage = null;
+  typingUsers.clear();
 
   $("badge-admin-button").classList.add("hidden");
   $("profile-modal").classList.add("hidden");
-  closeBadgeModal();
 
+  closeBadgeModal();
   setAuthMode(false);
   showAuth();
 });
 
-// Восстановление сессии
+/* =========================================================
+   ВОССТАНОВЛЕНИЕ СЕССИИ
+   ========================================================= */
+
 async function restoreSession() {
   if (!token) {
     showAuth();

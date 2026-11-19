@@ -50,33 +50,23 @@ pool.on("error", err => {
   console.error("PostgreSQL connection error:", err.message);
 });
 
-// Нормализация NOLINK ID
 function normalizeNolinkId(value) {
   let id = String(value || "").trim().toLowerCase();
-
-  if (id.startsWith("@")) {
-    id = id.slice(1);
-  }
-
+  if (id.startsWith("@")) id = id.slice(1);
   return id;
 }
 
-// Проверка формата NOLINK ID
 function validNolinkId(value) {
   return /^[a-z0-9]{3,8}$/.test(value);
 }
 
-// Подготовка поискового запроса.
-// Если пользователь ввёл @, ищем именно NOLINK ID.
 function makeUserSearch(value) {
   const query = String(value || "").trim().slice(0, 30);
 
   if (query.startsWith("@")) {
-    const id = normalizeNolinkId(query);
-
     return {
       isId: true,
-      value: `${id}%`
+      value: `${normalizeNolinkId(query)}%`
     };
   }
 
@@ -86,7 +76,6 @@ function makeUserSearch(value) {
   };
 }
 
-// Отправка письма через Gmail API
 async function sendVerificationEmail(email, code) {
   const clientId = process.env.GMAIL_CLIENT_ID;
   const clientSecret = process.env.GMAIL_CLIENT_SECRET;
@@ -302,6 +291,25 @@ async function initializeDatabase() {
       ADD COLUMN IF NOT EXISTS attachment_id TEXT
       REFERENCES attachments(id) ON DELETE SET NULL;
 
+    ALTER TABLE messages
+      ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+
+    ALTER TABLE messages
+      ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+    ALTER TABLE messages
+      ADD COLUMN IF NOT EXISTS reply_to_message_id TEXT
+      REFERENCES messages(id) ON DELETE SET NULL;
+
+    CREATE TABLE IF NOT EXISTS message_reads (
+      message_id TEXT NOT NULL
+        REFERENCES messages(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL
+        REFERENCES users(id) ON DELETE CASCADE,
+      read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (message_id, user_id)
+    );
+
     CREATE TABLE IF NOT EXISTS hidden_chats (
       chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -317,6 +325,9 @@ async function initializeDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_attachments_chat
       ON attachments(chat_id);
+
+    CREATE INDEX IF NOT EXISTS idx_message_reads_user
+      ON message_reads(user_id);
   `);
 
   console.log("NOLINK PostgreSQL database is ready.");
@@ -334,7 +345,6 @@ const io = new Server(server, {
   cors: { origin: corsOrigin }
 });
 
-// Активные Socket.IO-подключения по пользователям (учитывает несколько устройств).
 const onlineUsers = new Map();
 
 async function getUser(id) {
@@ -411,6 +421,62 @@ function publicUser(user) {
   };
 }
 
+/*
+ * Единый формат сообщения для API и Socket.IO.
+ * readBy содержит ID участников, которые прочитали сообщение.
+ */
+async function getMessage(messageId) {
+  const result = await pool.query(
+    `SELECT
+       m.id,
+       m.chat_id AS "chatId",
+       m.user_id AS "userId",
+       u.username,
+       u.nolink_id AS "nolinkId",
+       u.is_verified AS "isVerified",
+       m.content,
+       m.attachment_id AS "attachmentId",
+       m.created_at AS "createdAt",
+       m.edited_at AS "editedAt",
+       m.deleted_at AS "deletedAt",
+       m.reply_to_message_id AS "replyToMessageId",
+       CASE
+         WHEN parent.id IS NULL THEN NULL
+         ELSE json_build_object(
+           'id', parent.id,
+           'userId', parent.user_id,
+           'username', parent_user.username,
+           'content', parent.content,
+           'attachmentId', parent.attachment_id,
+           'deletedAt', parent.deleted_at
+         )
+       END AS "replyTo",
+       COALESCE(
+         (
+           SELECT json_agg(
+             json_build_object(
+               'userId', mr.user_id,
+               'readAt', mr.read_at
+             )
+           )
+           FROM message_reads mr
+           WHERE mr.message_id = m.id
+         ),
+         '[]'::json
+       ) AS "readBy"
+     FROM messages m
+     JOIN users u ON u.id = m.user_id
+     LEFT JOIN messages parent
+       ON parent.id = m.reply_to_message_id
+     LEFT JOIN users parent_user
+       ON parent_user.id = parent.user_id
+     WHERE m.id = $1`,
+    [messageId]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function chatPayload(chatId) {
   const chatResult = await pool.query(
     `SELECT id, type, name, owner_id AS "ownerId",
@@ -421,7 +487,6 @@ async function chatPayload(chatId) {
   );
 
   const chat = chatResult.rows[0];
-
   if (!chat) return null;
 
   const [membersResult, lastResult] = await Promise.all([
@@ -435,22 +500,19 @@ async function chatPayload(chatId) {
        ORDER BY u.username`,
       [chatId]
     ),
-
     pool.query(
-      `SELECT m.id, m.chat_id AS "chatId",
-              m.user_id AS "userId", u.username,
-              u.nolink_id AS "nolinkId",
-              u.is_verified AS "isVerified",
-              m.content, m.attachment_id AS "attachmentId",
-              m.created_at AS "createdAt"
-       FROM messages m
-       JOIN users u ON u.id = m.user_id
-       WHERE m.chat_id = $1
-       ORDER BY m.created_at DESC
+      `SELECT id
+       FROM messages
+       WHERE chat_id = $1
+       ORDER BY created_at DESC
        LIMIT 1`,
       [chatId]
     )
   ]);
+
+  const lastMessage = lastResult.rows[0]
+    ? await getMessage(lastResult.rows[0].id)
+    : null;
 
   return {
     ...chat,
@@ -458,7 +520,7 @@ async function chatPayload(chatId) {
       ...member,
       isOnline: onlineUsers.has(member.id)
     })),
-    lastMessage: lastResult.rows[0] || null
+    lastMessage
   };
 }
 
@@ -466,11 +528,11 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true, app: "NOLINK" });
 });
 
-// Регистрация: пользователь сам выбирает NOLINK ID
+/* -------------------- РЕГИСТРАЦИЯ -------------------- */
+
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { username, email, password } = req.body || {};
-
     const nolinkId = normalizeNolinkId(req.body?.nolinkId);
 
     if (
@@ -639,7 +701,6 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-// Повторная отправка кода
 app.post("/api/auth/resend-code", async (req, res) => {
   try {
     const email = String(req.body?.email || "")
@@ -693,12 +754,7 @@ app.post("/api/auth/resend-code", async (req, res) => {
            last_sent_at = $4,
            attempts = 0
        WHERE email = $1`,
-      [
-        email,
-        makeCodeHash(email, code),
-        expiresAt,
-        now
-      ]
+      [email, makeCodeHash(email, code), expiresAt, now]
     );
 
     try {
@@ -723,7 +779,6 @@ app.post("/api/auth/resend-code", async (req, res) => {
   }
 });
 
-// Подтверждение почты и создание аккаунта
 app.post("/api/auth/verify-registration", async (req, res) => {
   const email = String(req.body?.email || "")
     .trim()
@@ -758,7 +813,6 @@ app.post("/api/auth/verify-registration", async (req, res) => {
 
     if (!pending) {
       await client.query("ROLLBACK");
-
       return res.status(400).json({
         error: "Регистрация не найдена. Начни её заново."
       });
@@ -769,7 +823,6 @@ app.post("/api/auth/verify-registration", async (req, res) => {
         "DELETE FROM pending_registrations WHERE email = $1",
         [email]
       );
-
       await client.query("COMMIT");
 
       return res.status(400).json({
@@ -782,7 +835,6 @@ app.post("/api/auth/verify-registration", async (req, res) => {
         "DELETE FROM pending_registrations WHERE email = $1",
         [email]
       );
-
       await client.query("COMMIT");
 
       return res.status(429).json({
@@ -847,11 +899,7 @@ app.post("/api/auth/verify-registration", async (req, res) => {
     await client.query("COMMIT");
 
     const user = await getUser(id);
-    const token = jwt.sign(
-      { id },
-      SECRET,
-      { expiresIn: "30d" }
-    );
+    const token = jwt.sign({ id }, SECRET, { expiresIn: "30d" });
 
     res.status(201).json({ user, token });
   } catch (err) {
@@ -864,7 +912,6 @@ app.post("/api/auth/verify-registration", async (req, res) => {
     }
 
     console.error("Verify registration error:", err);
-
     res.status(500).json({
       error: "Не удалось подтвердить регистрацию"
     });
@@ -873,7 +920,6 @@ app.post("/api/auth/verify-registration", async (req, res) => {
   }
 });
 
-// Вход
 app.post("/api/auth/login", async (req, res) => {
   try {
     const email = String(req.body?.email || "").trim();
@@ -909,21 +955,16 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// Текущий пользователь
 app.get("/api/me", auth, (req, res) => {
   res.json({ user: req.user });
 });
 
-// NOLINK ID задаётся только при регистрации и не имеет API изменения.
+/* -------------------- ГАЛОЧКИ -------------------- */
 
-// Проверка прав администратора галочек
 app.get("/api/badges/admin", auth, (req, res) => {
-  res.json({
-    isAdmin: isBadgeAdmin(req.user)
-  });
+  res.json({ isAdmin: isBadgeAdmin(req.user) });
 });
 
-// Поиск пользователей для управления галочками
 app.get("/api/badges/users", auth, async (req, res) => {
   try {
     if (!isBadgeAdmin(req.user)) {
@@ -933,10 +974,7 @@ app.get("/api/badges/users", auth, async (req, res) => {
     }
 
     const q = String(req.query.q || "").trim().slice(0, 30);
-
-    if (q.length < 2) {
-      return res.json([]);
-    }
+    if (q.length < 2) return res.json([]);
 
     const search = makeUserSearch(q);
 
@@ -966,7 +1004,6 @@ app.get("/api/badges/users", auth, async (req, res) => {
   }
 });
 
-// Выдать или снять галочку
 app.patch("/api/badges/users/:id", auth, async (req, res) => {
   try {
     if (!isBadgeAdmin(req.user)) {
@@ -1003,10 +1040,7 @@ app.patch("/api/badges/users/:id", auth, async (req, res) => {
       isVerified: updatedUser.isVerified
     });
 
-    res.json({
-      ok: true,
-      user: updatedUser
-    });
+    res.json({ ok: true, user: updatedUser });
   } catch (err) {
     console.error("Badge update error:", err);
     res.status(500).json({
@@ -1015,11 +1049,11 @@ app.patch("/api/badges/users/:id", auth, async (req, res) => {
   }
 });
 
-// Обычный поиск пользователей по имени или NOLINK ID
+/* -------------------- ПОЛЬЗОВАТЕЛИ -------------------- */
+
 app.get("/api/users", auth, async (req, res) => {
   try {
     const q = String(req.query.q || "").trim().slice(0, 30);
-
     if (q.length < 2) return res.json([]);
 
     const search = makeUserSearch(q);
@@ -1049,7 +1083,8 @@ app.get("/api/users", auth, async (req, res) => {
   }
 });
 
-// Список чатов
+/* -------------------- ЧАТЫ -------------------- */
+
 app.get("/api/chats", auth, async (req, res) => {
   try {
     const result = await pool.query(
@@ -1077,7 +1112,6 @@ app.get("/api/chats", auth, async (req, res) => {
   }
 });
 
-// Создание или открытие личного чата
 app.post("/api/chats/direct", auth, async (req, res) => {
   const client = await pool.connect();
   let transactionStarted = false;
@@ -1088,8 +1122,7 @@ app.post("/api/chats/direct", auth, async (req, res) => {
 
     const otherResult = await client.query(
       `SELECT id FROM users
-       WHERE id = $1
-          OR LOWER(nolink_id) = LOWER($2)
+       WHERE id = $1 OR LOWER(nolink_id) = LOWER($2)
        LIMIT 1`,
       [target, normalizedTarget]
     );
@@ -1150,9 +1183,7 @@ app.post("/api/chats/direct", auth, async (req, res) => {
     const createdChat = await chatPayload(id);
 
     for (const userId of [req.user.id, other.id]) {
-      io.to(`user:${userId}`).emit("chat:created", {
-        chatId: id
-      });
+      io.to(`user:${userId}`).emit("chat:created", { chatId: id });
     }
 
     res.status(201).json(createdChat);
@@ -1168,14 +1199,12 @@ app.post("/api/chats/direct", auth, async (req, res) => {
   }
 });
 
-// Создание группы
 app.post("/api/chats/group", auth, async (req, res) => {
   const client = await pool.connect();
   let transactionStarted = false;
 
   try {
     const name = String(req.body?.name || "").trim().slice(0, 60);
-
     const usernames = Array.isArray(req.body?.usernames)
       ? req.body.usernames.slice(0, 49)
       : [];
@@ -1208,9 +1237,7 @@ app.post("/api/chats/group", auth, async (req, res) => {
         [normalizedId, isId, value]
       );
 
-      if (result.rows[0]) {
-        found.push(result.rows[0].id);
-      }
+      if (result.rows[0]) found.push(result.rows[0].id);
     }
 
     const unique = [...new Set([req.user.id, ...found])];
@@ -1248,9 +1275,7 @@ app.post("/api/chats/group", auth, async (req, res) => {
     const createdChat = await chatPayload(id);
 
     for (const userId of unique) {
-      io.to(`user:${userId}`).emit("chat:created", {
-        chatId: id
-      });
+      io.to(`user:${userId}`).emit("chat:created", { chatId: id });
     }
 
     res.status(201).json(createdChat);
@@ -1266,7 +1291,6 @@ app.post("/api/chats/group", auth, async (req, res) => {
   }
 });
 
-// Удаление чата
 app.delete("/api/chats/:id", auth, async (req, res) => {
   const chatId = String(req.params.id || "");
   const mode = String(req.body?.mode || "");
@@ -1282,9 +1306,7 @@ app.delete("/api/chats/:id", auth, async (req, res) => {
     const chat = chatResult.rows[0];
 
     if (!chat || !await isMember(chatId, req.user.id)) {
-      return res.status(404).json({
-        error: "Чат не найден"
-      });
+      return res.status(404).json({ error: "Чат не найден" });
     }
 
     if (mode === "me") {
@@ -1297,11 +1319,7 @@ app.delete("/api/chats/:id", auth, async (req, res) => {
         [chatId, req.user.id]
       );
 
-      return res.json({
-        ok: true,
-        mode: "me",
-        chatId
-      });
+      return res.json({ ok: true, mode: "me", chatId });
     }
 
     if (mode !== "everyone") {
@@ -1310,10 +1328,7 @@ app.delete("/api/chats/:id", auth, async (req, res) => {
       });
     }
 
-    if (
-      chat.type === "group" &&
-      chat.owner_id !== req.user.id
-    ) {
+    if (chat.type === "group" && chat.owner_id !== req.user.id) {
       return res.status(403).json({
         error: "Удалить группу у всех может только её создатель"
       });
@@ -1324,23 +1339,13 @@ app.delete("/api/chats/:id", auth, async (req, res) => {
       [chatId]
     );
 
-    await pool.query(
-      "DELETE FROM chats WHERE id = $1",
-      [chatId]
-    );
+    await pool.query("DELETE FROM chats WHERE id = $1", [chatId]);
 
     for (const member of members.rows) {
-      io.to(`user:${member.user_id}`).emit(
-        "chat:deleted",
-        { chatId }
-      );
+      io.to(`user:${member.user_id}`).emit("chat:deleted", { chatId });
     }
 
-    res.json({
-      ok: true,
-      mode: "everyone",
-      chatId
-    });
+    res.json({ ok: true, mode: "everyone", chatId });
   } catch (err) {
     console.error("Delete chat error:", err);
     res.status(500).json({
@@ -1349,31 +1354,32 @@ app.delete("/api/chats/:id", auth, async (req, res) => {
   }
 });
 
-// Получение сообщений
+/* -------------------- СООБЩЕНИЯ: HTTP -------------------- */
+
 app.get("/api/chats/:id/messages", auth, async (req, res) => {
   try {
-    if (!await isMember(req.params.id, req.user.id)) {
+    const chatId = String(req.params.id || "");
+
+    if (!await isMember(chatId, req.user.id)) {
       return res.status(403).json({
         error: "Нет доступа к этому чату"
       });
     }
 
     const result = await pool.query(
-      `SELECT m.id, m.chat_id AS "chatId",
-              m.user_id AS "userId", u.username,
-              u.nolink_id AS "nolinkId",
-              u.is_verified AS "isVerified",
-              m.content, m.attachment_id AS "attachmentId",
-              m.created_at AS "createdAt"
-       FROM messages m
-       JOIN users u ON u.id = m.user_id
-       WHERE m.chat_id = $1
-       ORDER BY m.created_at DESC
+      `SELECT id
+       FROM messages
+       WHERE chat_id = $1
+       ORDER BY created_at DESC
        LIMIT 100`,
-      [req.params.id]
+      [chatId]
     );
 
-    res.json(result.rows.reverse());
+    const messages = await Promise.all(
+      result.rows.reverse().map(row => getMessage(row.id))
+    );
+
+    res.json(messages.filter(Boolean));
   } catch (err) {
     console.error("Load messages error:", err);
     res.status(500).json({
@@ -1382,7 +1388,8 @@ app.get("/api/chats/:id/messages", auth, async (req, res) => {
   }
 });
 
-// Загрузка фотографии
+/* -------------------- ФОТОГРАФИИ -------------------- */
+
 app.post("/api/chats/:id/images", auth, async (req, res) => {
   try {
     const chatId = String(req.params.id || "");
@@ -1394,7 +1401,6 @@ app.post("/api/chats/:id/images", auth, async (req, res) => {
     }
 
     const mime = String(req.body?.mime || "");
-
     const filename = String(req.body?.filename || "photo")
       .replace(/[^\w.\-а-яА-Я]/g, "_")
       .slice(0, 100);
@@ -1414,13 +1420,8 @@ app.post("/api/chats/:id/images", auth, async (req, res) => {
 
     const encoded = String(req.body?.data || "");
 
-    if (
-      !encoded ||
-      !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)
-    ) {
-      return res.status(400).json({
-        error: "Некорректный файл"
-      });
+    if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+      return res.status(400).json({ error: "Некорректный файл" });
     }
 
     const buffer = Buffer.from(encoded, "base64");
@@ -1454,9 +1455,7 @@ app.post("/api/chats/:id/images", auth, async (req, res) => {
     const isGif =
       mime === "image/gif" &&
       buffer.length >= 6 &&
-      ["GIF87a", "GIF89a"].includes(
-        buffer.toString("ascii", 0, 6)
-      );
+      ["GIF87a", "GIF89a"].includes(buffer.toString("ascii", 0, 6));
 
     if (!isJpeg && !isPng && !isWebp && !isGif) {
       return res.status(400).json({
@@ -1467,7 +1466,6 @@ app.post("/api/chats/:id/images", auth, async (req, res) => {
     const attachmentId = randomUUID();
     const messageId = randomUUID();
     const now = new Date();
-
     const client = await pool.connect();
 
     try {
@@ -1492,14 +1490,7 @@ app.post("/api/chats/:id/images", auth, async (req, res) => {
         `INSERT INTO messages
          (id, chat_id, user_id, content, attachment_id, created_at)
          VALUES ($1, $2, $3, $4, $5, $6)`,
-        [
-          messageId,
-          chatId,
-          req.user.id,
-          "Фотография",
-          attachmentId,
-          now
-        ]
+        [messageId, chatId, req.user.id, "Фотография", attachmentId, now]
       );
 
       await client.query(
@@ -1516,18 +1507,7 @@ app.post("/api/chats/:id/images", auth, async (req, res) => {
       client.release();
     }
 
-    const msg = {
-      id: messageId,
-      chatId,
-      userId: req.user.id,
-      username: req.user.username,
-      nolinkId: req.user.nolinkId,
-      isVerified: req.user.isVerified === true,
-      content: "Фотография",
-      attachmentId,
-      createdAt: now
-    };
-
+    const msg = await getMessage(messageId);
     io.to(chatId).emit("message:new", msg);
 
     res.status(201).json(msg);
@@ -1539,7 +1519,6 @@ app.post("/api/chats/:id/images", auth, async (req, res) => {
   }
 });
 
-// Получение фотографии
 app.get("/api/attachments/:id", auth, async (req, res) => {
   try {
     const result = await pool.query(
@@ -1563,7 +1542,6 @@ app.get("/api/attachments/:id", auth, async (req, res) => {
     res.setHeader("Content-Type", attachment.mime_type);
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Cache-Control", "private, max-age=3600");
-
     res.send(attachment.data);
   } catch (err) {
     console.error("Get attachment error:", err);
@@ -1573,7 +1551,8 @@ app.get("/api/attachments/:id", auth, async (req, res) => {
   }
 });
 
-// Авторизация Socket.IO
+/* -------------------- SOCKET.IO: АВТОРИЗАЦИЯ -------------------- */
+
 io.use(async (socket, next) => {
   try {
     const payload = jwt.verify(
@@ -1583,9 +1562,7 @@ io.use(async (socket, next) => {
 
     const user = await getUser(payload.id);
 
-    if (!user) {
-      return next(new Error("Аккаунт не найден"));
-    }
+    if (!user) return next(new Error("Аккаунт не найден"));
 
     socket.user = user;
     next();
@@ -1598,6 +1575,7 @@ io.on("connection", socket => {
   const userId = socket.user.id;
   const connections = onlineUsers.get(userId) || new Set();
   const wasOnline = connections.size > 0;
+
   connections.add(socket.id);
   onlineUsers.set(userId, connections);
 
@@ -1620,25 +1598,88 @@ io.on("connection", socket => {
     }
   });
 
+  /* Вход в чат и автоматическая отметка входящих сообщений как прочитанных. */
   socket.on("chat:join", async chatId => {
     try {
       if (
-        typeof chatId === "string" &&
-        await isMember(chatId, socket.user.id)
+        typeof chatId !== "string" ||
+        !await isMember(chatId, userId)
       ) {
-        socket.join(chatId);
+        return;
       }
+
+      socket.join(chatId);
+      await markChatRead(chatId, userId);
     } catch (err) {
       console.error("Chat join error:", err);
     }
   });
 
+  /* Отдельная отметка прочтения после загрузки сообщений. */
+  socket.on("chat:read", async (chatId, ack) => {
+    try {
+      if (
+        typeof chatId !== "string" ||
+        !await isMember(chatId, userId)
+      ) {
+        throw new Error("Нет доступа к чату");
+      }
+
+      const result = await markChatRead(chatId, userId);
+
+      if (typeof ack === "function") ack(null, result);
+    } catch (err) {
+      if (typeof ack === "function") ack(err.message);
+    }
+  });
+
+  /* Индикатор печати. */
+  socket.on("typing:start", async chatId => {
+    try {
+      if (
+        typeof chatId !== "string" ||
+        !await isMember(chatId, userId)
+      ) return;
+
+      socket.to(chatId).emit("typing:update", {
+        chatId,
+        userId,
+        username: socket.user.username,
+        isTyping: true
+      });
+    } catch (err) {
+      console.error("Typing start error:", err);
+    }
+  });
+
+  socket.on("typing:stop", async chatId => {
+    try {
+      if (
+        typeof chatId !== "string" ||
+        !await isMember(chatId, userId)
+      ) return;
+
+      socket.to(chatId).emit("typing:update", {
+        chatId,
+        userId,
+        username: socket.user.username,
+        isTyping: false
+      });
+    } catch (err) {
+      console.error("Typing stop error:", err);
+    }
+  });
+
+  /* Отправка текстового сообщения, в том числе с ответом. */
   socket.on("message:send", async (payload, ack) => {
     try {
       const chatId = String(payload?.chatId || "");
       const content = String(payload?.content || "").trim();
+      const replyToMessageId = payload?.replyToMessageId
+        ? String(payload.replyToMessageId)
+        : null;
 
-      if (!await isMember(chatId, socket.user.id)) {
+      if (!await isMember(chatId, userId)) {
         throw new Error("Нет доступа к чату");
       }
 
@@ -1648,49 +1689,167 @@ io.on("connection", socket => {
         );
       }
 
-      const msg = {
-        id: randomUUID(),
-        chatId,
-        userId: socket.user.id,
-        username: socket.user.username,
-        nolinkId: socket.user.nolinkId,
-        isVerified: socket.user.isVerified === true,
-        content,
-        attachmentId: null,
-        createdAt: new Date()
-      };
+      if (replyToMessageId) {
+        const parentResult = await pool.query(
+          `SELECT id
+           FROM messages
+           WHERE id = $1 AND chat_id = $2`,
+          [replyToMessageId, chatId]
+        );
+
+        if (!parentResult.rows[0]) {
+          throw new Error("Сообщение для ответа не найдено");
+        }
+      }
+
+      const id = randomUUID();
+      const createdAt = new Date();
 
       await pool.query(
         `INSERT INTO messages
-         (id, chat_id, user_id, content, created_at)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          msg.id,
-          chatId,
-          msg.userId,
-          content,
-          msg.createdAt
-        ]
+         (id, chat_id, user_id, content, created_at, reply_to_message_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [id, chatId, userId, content, createdAt, replyToMessageId]
       );
 
       await pool.query(
         `DELETE FROM hidden_chats
          WHERE chat_id = $1 AND user_id = $2`,
-        [chatId, socket.user.id]
+        [chatId, userId]
       );
 
+      const msg = await getMessage(id);
       io.to(chatId).emit("message:new", msg);
 
-      if (typeof ack === "function") {
-        ack(null);
-      }
+      if (typeof ack === "function") ack(null, msg);
     } catch (err) {
-      if (typeof ack === "function") {
-        ack(err.message);
+      if (typeof ack === "function") ack(err.message);
+    }
+  });
+
+  /* Редактирование: только автор сообщения. */
+  socket.on("message:edit", async (payload, ack) => {
+    try {
+      const chatId = String(payload?.chatId || "");
+      const messageId = String(payload?.messageId || "");
+      const content = String(payload?.content || "").trim();
+
+      if (!await isMember(chatId, userId)) {
+        throw new Error("Нет доступа к чату");
       }
+
+      if (!content || content.length > 4000) {
+        throw new Error(
+          "Сообщение должно содержать от 1 до 4000 символов"
+        );
+      }
+
+      const result = await pool.query(
+        `UPDATE messages
+         SET content = $3,
+             edited_at = NOW()
+         WHERE id = $1
+           AND chat_id = $2
+           AND user_id = $4
+           AND deleted_at IS NULL
+           AND attachment_id IS NULL
+         RETURNING id`,
+        [messageId, chatId, content, userId]
+      );
+
+      if (!result.rows[0]) {
+        throw new Error(
+          "Сообщение нельзя изменить: проверь, что оно твоё и не удалено"
+        );
+      }
+
+      const updated = await getMessage(messageId);
+      io.to(chatId).emit("message:updated", updated);
+
+      if (typeof ack === "function") ack(null, updated);
+    } catch (err) {
+      if (typeof ack === "function") ack(err.message);
+    }
+  });
+
+  /* Удаление: только автор. Используется мягкое удаление. */
+  socket.on("message:delete", async (payload, ack) => {
+    try {
+      const chatId = String(payload?.chatId || "");
+      const messageId = String(payload?.messageId || "");
+
+      if (!await isMember(chatId, userId)) {
+        throw new Error("Нет доступа к чату");
+      }
+
+      const result = await pool.query(
+        `UPDATE messages
+         SET content = 'Сообщение удалено',
+             attachment_id = NULL,
+             deleted_at = NOW(),
+             edited_at = NULL
+         WHERE id = $1
+           AND chat_id = $2
+           AND user_id = $3
+           AND deleted_at IS NULL
+         RETURNING id`,
+        [messageId, chatId, userId]
+      );
+
+      if (!result.rows[0]) {
+        throw new Error(
+          "Сообщение нельзя удалить: возможно, оно уже удалено или не твоё"
+        );
+      }
+
+      const updated = await getMessage(messageId);
+      io.to(chatId).emit("message:updated", updated);
+
+      if (typeof ack === "function") ack(null, updated);
+    } catch (err) {
+      if (typeof ack === "function") ack(err.message);
     }
   });
 });
+
+/*
+ * Создаёт отметки прочтения для всех входящих сообщений в чате.
+ * Отправляет событие участникам комнаты, чтобы отправители
+ * могли обновить галочки/статус сообщения.
+ */
+async function markChatRead(chatId, readerId) {
+  const result = await pool.query(
+    `INSERT INTO message_reads (message_id, user_id, read_at)
+     SELECT m.id, $2, NOW()
+     FROM messages m
+     WHERE m.chat_id = $1
+       AND m.user_id <> $2
+       AND m.deleted_at IS NULL
+     ON CONFLICT (message_id, user_id) DO NOTHING
+     RETURNING message_id`,
+    [chatId, readerId]
+  );
+
+  if (result.rowCount > 0) {
+    const messageIds = result.rows.map(row => row.message_id);
+    const readAt = new Date();
+
+    io.to(chatId).emit("messages:read", {
+      chatId,
+      userId: readerId,
+      messageIds,
+      readAt
+    });
+  }
+
+  return {
+    chatId,
+    userId: readerId,
+    messageIds: result.rows.map(row => row.message_id)
+  };
+}
+
+/* -------------------- ЗАПУСК -------------------- */
 
 async function start() {
   try {
