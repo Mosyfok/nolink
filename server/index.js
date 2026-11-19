@@ -1,5 +1,7 @@
 
-require("dotenv").config();
+require("dotenv").config({
+  path: require("path").resolve(__dirname, "../.env")
+});
 
 const express = require("express");
 const http = require("http");
@@ -23,7 +25,6 @@ const CODE_LIFETIME_MINUTES = 10;
 const CODE_RESEND_SECONDS = 60;
 const MAX_CODE_ATTEMPTS = 5;
 
-// Только эти подтверждённые аккаунты могут управлять галочками.
 const BADGE_ADMIN_EMAILS = new Set([
   "kirillgrechishkin2@gmail.com",
   "kirillgreciskin326@gmail.com",
@@ -49,6 +50,42 @@ const pool = new Pool({
 pool.on("error", err => {
   console.error("PostgreSQL connection error:", err.message);
 });
+
+// Нормализация NOLINK ID
+function normalizeNolinkId(value) {
+  let id = String(value || "").trim().toLowerCase();
+
+  if (id.startsWith("@")) {
+    id = id.slice(1);
+  }
+
+  return id;
+}
+
+// Проверка формата NOLINK ID
+function validNolinkId(value) {
+  return /^[a-z0-9]{3,8}$/.test(value);
+}
+
+// Подготовка поискового запроса.
+// Если пользователь ввёл @, ищем именно NOLINK ID.
+function makeUserSearch(value) {
+  const query = String(value || "").trim().slice(0, 30);
+
+  if (query.startsWith("@")) {
+    const id = normalizeNolinkId(query);
+
+    return {
+      isId: true,
+      value: `${id}%`
+    };
+  }
+
+  return {
+    isId: false,
+    value: `%${query}%`
+  };
+}
 
 // Отправка письма через Gmail API
 async function sendVerificationEmail(email, code) {
@@ -194,6 +231,13 @@ async function initializeDatabase() {
       ADD COLUMN IF NOT EXISTS is_verified BOOLEAN
       NOT NULL DEFAULT FALSE;
 
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS nolink_id TEXT;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS users_nolink_id_unique
+      ON users (LOWER(nolink_id))
+      WHERE nolink_id IS NOT NULL;
+
     CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower
       ON users (LOWER(username));
 
@@ -210,8 +254,15 @@ async function initializeDatabase() {
       attempts INTEGER NOT NULL DEFAULT 0
     );
 
+    ALTER TABLE pending_registrations
+      ADD COLUMN IF NOT EXISTS nolink_id TEXT;
+
     CREATE UNIQUE INDEX IF NOT EXISTS pending_username_lower
       ON pending_registrations (LOWER(username));
+
+    CREATE UNIQUE INDEX IF NOT EXISTS pending_nolink_id_unique
+      ON pending_registrations (LOWER(nolink_id))
+      WHERE nolink_id IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS chats (
       id TEXT PRIMARY KEY,
@@ -289,6 +340,7 @@ async function getUser(id) {
     `SELECT id, username, email,
             email_verified AS "emailVerified",
             is_verified AS "isVerified",
+            nolink_id AS "nolinkId",
             created_at AS "createdAt"
      FROM users
      WHERE id = $1`,
@@ -352,6 +404,7 @@ function publicUser(user) {
   return {
     id: user.id,
     username: user.username,
+    nolinkId: user.nolinkId,
     isVerified: user.isVerified === true
   };
 }
@@ -372,6 +425,7 @@ async function chatPayload(chatId) {
   const [membersResult, lastResult] = await Promise.all([
     pool.query(
       `SELECT u.id, u.username,
+              u.nolink_id AS "nolinkId",
               u.is_verified AS "isVerified"
        FROM users u
        JOIN members m ON m.user_id = u.id
@@ -383,6 +437,7 @@ async function chatPayload(chatId) {
     pool.query(
       `SELECT m.id, m.chat_id AS "chatId",
               m.user_id AS "userId", u.username,
+              u.nolink_id AS "nolinkId",
               u.is_verified AS "isVerified",
               m.content, m.attachment_id AS "attachmentId",
               m.created_at AS "createdAt"
@@ -406,10 +461,12 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true, app: "NOLINK" });
 });
 
-// Начало регистрации: отправка кода
+// Регистрация: пользователь сам выбирает NOLINK ID
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { username, email, password } = req.body || {};
+
+    const nolinkId = normalizeNolinkId(req.body?.nolinkId);
 
     if (
       typeof username !== "string" ||
@@ -417,6 +474,12 @@ app.post("/api/auth/register", async (req, res) => {
     ) {
       return res.status(400).json({
         error: "Имя: 3–20 символов, буквы, цифры или _"
+      });
+    }
+
+    if (!validNolinkId(nolinkId)) {
+      return res.status(400).json({
+        error: "NOLINK ID: от 3 до 8 символов, только латинские буквы и цифры"
       });
     }
 
@@ -452,6 +515,23 @@ app.post("/api/auth/register", async (req, res) => {
     if (existing.rowCount > 0) {
       return res.status(409).json({
         error: "Имя пользователя или почта уже заняты"
+      });
+    }
+
+    const idTaken = await pool.query(
+      `SELECT 1 FROM users
+       WHERE LOWER(nolink_id) = LOWER($1)
+       UNION ALL
+       SELECT 1 FROM pending_registrations
+       WHERE LOWER(nolink_id) = LOWER($1)
+         AND email <> $2
+       LIMIT 1`,
+      [nolinkId, normalizedEmail]
+    );
+
+    if (idTaken.rowCount > 0) {
+      return res.status(409).json({
+        error: "Этот NOLINK ID уже занят. Выбери другой."
       });
     }
 
@@ -498,12 +578,13 @@ app.post("/api/auth/register", async (req, res) => {
 
     await pool.query(
       `INSERT INTO pending_registrations
-       (email, username, password_hash, code_hash,
+       (email, username, nolink_id, password_hash, code_hash,
         expires_at, last_sent_at, attempts)
-       VALUES ($1, $2, $3, $4, $5, $6, 0)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 0)
        ON CONFLICT (email)
        DO UPDATE SET
          username = EXCLUDED.username,
+         nolink_id = EXCLUDED.nolink_id,
          password_hash = EXCLUDED.password_hash,
          code_hash = EXCLUDED.code_hash,
          expires_at = EXCLUDED.expires_at,
@@ -512,6 +593,7 @@ app.post("/api/auth/register", async (req, res) => {
       [
         normalizedEmail,
         normalizedUsername,
+        nolinkId,
         passwordHash,
         makeCodeHash(normalizedEmail, code),
         expiresAt,
@@ -543,7 +625,7 @@ app.post("/api/auth/register", async (req, res) => {
   } catch (err) {
     if (err.code === "23505") {
       return res.status(409).json({
-        error: "Имя пользователя или почта уже заняты"
+        error: "Этот NOLINK ID или имя уже заняты. Выбери другие."
       });
     }
 
@@ -659,7 +741,7 @@ app.post("/api/auth/verify-registration", async (req, res) => {
     await client.query("BEGIN");
 
     const result = await client.query(
-      `SELECT email, username, password_hash, code_hash,
+      `SELECT email, username, nolink_id, password_hash, code_hash,
               expires_at, attempts
        FROM pending_registrations
        WHERE email = $1
@@ -739,14 +821,16 @@ app.post("/api/auth/verify-registration", async (req, res) => {
 
     await client.query(
       `INSERT INTO users
-       (id, username, email, password_hash, created_at, email_verified)
-       VALUES ($1, $2, $3, $4, $5, TRUE)`,
+       (id, username, email, password_hash, created_at,
+        email_verified, nolink_id)
+       VALUES ($1, $2, $3, $4, $5, TRUE, $6)`,
       [
         id,
         pending.username,
         email,
         pending.password_hash,
-        now
+        now,
+        pending.nolink_id
       ]
     );
 
@@ -770,7 +854,7 @@ app.post("/api/auth/verify-registration", async (req, res) => {
 
     if (err.code === "23505") {
       return res.status(409).json({
-        error: "Имя пользователя или почта уже заняты"
+        error: "Этот NOLINK ID уже занят. Начни регистрацию с другим ID."
       });
     }
 
@@ -832,7 +916,7 @@ app.get("/api/badges/admin", auth, (req, res) => {
   });
 });
 
-// Поиск пользователей для меню управления галочками
+// Поиск пользователей для управления галочками
 app.get("/api/badges/users", auth, async (req, res) => {
   try {
     if (!isBadgeAdmin(req.user)) {
@@ -847,14 +931,23 @@ app.get("/api/badges/users", auth, async (req, res) => {
       return res.json([]);
     }
 
+    const search = makeUserSearch(q);
+
     const result = await pool.query(
-      `SELECT id, username,
+      `SELECT id, username, nolink_id AS "nolinkId",
               is_verified AS "isVerified"
        FROM users
-       WHERE username ILIKE $1
+       WHERE (
+         ($2 = TRUE AND nolink_id ILIKE $1)
+         OR
+         ($2 = FALSE AND (
+           username ILIKE $1
+           OR nolink_id ILIKE $1
+         ))
+       )
        ORDER BY username
        LIMIT 20`,
-      [`%${q}%`]
+      [search.value, search.isId]
     );
 
     res.json(result.rows);
@@ -885,7 +978,7 @@ app.patch("/api/badges/users/:id", auth, async (req, res) => {
       `UPDATE users
        SET is_verified = $2
        WHERE id = $1
-       RETURNING id, username,
+       RETURNING id, username, nolink_id AS "nolinkId",
                  is_verified AS "isVerified"`,
       [String(req.params.id), req.body.verified]
     );
@@ -898,7 +991,6 @@ app.patch("/api/badges/users/:id", auth, async (req, res) => {
 
     const updatedUser = result.rows[0];
 
-    // Обновляем галочку у всех подключённых пользователей.
     io.emit("user:badge-updated", {
       userId: updatedUser.id,
       isVerified: updatedUser.isVerified
@@ -916,21 +1008,31 @@ app.patch("/api/badges/users/:id", auth, async (req, res) => {
   }
 });
 
-// Обычный поиск пользователей
+// Обычный поиск пользователей по имени или NOLINK ID
 app.get("/api/users", auth, async (req, res) => {
   try {
     const q = String(req.query.q || "").trim().slice(0, 30);
 
     if (q.length < 2) return res.json([]);
 
+    const search = makeUserSearch(q);
+
     const result = await pool.query(
-      `SELECT id, username,
+      `SELECT id, username, nolink_id AS "nolinkId",
               is_verified AS "isVerified"
        FROM users
-       WHERE username ILIKE $1 AND id <> $2
+       WHERE id <> $3
+         AND (
+           ($2 = TRUE AND nolink_id ILIKE $1)
+           OR
+           ($2 = FALSE AND (
+             username ILIKE $1
+             OR nolink_id ILIKE $1
+           ))
+         )
        ORDER BY username
        LIMIT 20`,
-      [`%${q}%`, req.user.id]
+      [search.value, search.isId, req.user.id]
     );
 
     res.json(result.rows.map(publicUser));
@@ -974,9 +1076,15 @@ app.post("/api/chats/direct", auth, async (req, res) => {
   let transactionStarted = false;
 
   try {
+    const target = String(req.body?.userId || "").trim();
+    const normalizedTarget = normalizeNolinkId(target);
+
     const otherResult = await client.query(
-      "SELECT id FROM users WHERE id = $1",
-      [String(req.body?.userId || "")]
+      `SELECT id FROM users
+       WHERE id = $1
+          OR LOWER(nolink_id) = LOWER($2)
+       LIMIT 1`,
+      [target, normalizedTarget]
     );
 
     const other = otherResult.rows[0];
@@ -1074,10 +1182,23 @@ app.post("/api/chats/group", auth, async (req, res) => {
     const found = [];
 
     for (const username of usernames) {
+      const value = String(username).trim();
+      const normalizedId = normalizeNolinkId(value);
+      const isId = value.startsWith("@");
+
       const result = await client.query(
         `SELECT id FROM users
-         WHERE LOWER(username) = LOWER($1)`,
-        [String(username).trim()]
+         WHERE (
+           $2 = TRUE AND LOWER(nolink_id) = LOWER($1)
+         )
+         OR (
+           $2 = FALSE AND (
+             LOWER(username) = LOWER($3)
+             OR LOWER(nolink_id) = LOWER($1)
+           )
+         )
+         LIMIT 1`,
+        [normalizedId, isId, value]
       );
 
       if (result.rows[0]) {
@@ -1233,6 +1354,7 @@ app.get("/api/chats/:id/messages", auth, async (req, res) => {
     const result = await pool.query(
       `SELECT m.id, m.chat_id AS "chatId",
               m.user_id AS "userId", u.username,
+              u.nolink_id AS "nolinkId",
               u.is_verified AS "isVerified",
               m.content, m.attachment_id AS "attachmentId",
               m.created_at AS "createdAt"
@@ -1392,6 +1514,7 @@ app.post("/api/chats/:id/images", auth, async (req, res) => {
       chatId,
       userId: req.user.id,
       username: req.user.username,
+      nolinkId: req.user.nolinkId,
       isVerified: req.user.isVerified === true,
       content: "Фотография",
       attachmentId,
@@ -1500,6 +1623,7 @@ io.on("connection", socket => {
         chatId,
         userId: socket.user.id,
         username: socket.user.username,
+        nolinkId: socket.user.nolinkId,
         isVerified: socket.user.isVerified === true,
         content,
         attachmentId: null,

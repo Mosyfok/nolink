@@ -21,7 +21,9 @@
       <p class="muted">Войди или создай аккаунт, чтобы начать общаться.</p>
 
       <form id="auth-form">
-        <label id="username-label" class="hidden" for="username">Имя пользователя</label>
+        <label id="username-label" class="hidden" for="username">
+          Имя пользователя
+        </label>
         <input
           id="username"
           class="hidden"
@@ -30,6 +32,24 @@
           minlength="3"
           maxlength="20"
         >
+
+        <label id="nolink-id-label" class="hidden" for="nolink-id">
+          Твой NOLINK ID
+        </label>
+        <input
+          id="nolink-id"
+          class="hidden"
+          type="text"
+          autocomplete="off"
+          placeholder="Например, fox123"
+          minlength="3"
+          maxlength="9"
+          autocapitalize="none"
+          spellcheck="false"
+        >
+        <small id="nolink-id-hint" class="muted hidden">
+          От 3 до 8 английских букв или цифр. Символ @ можно не вводить.
+        </small>
 
         <label for="email">Электронная почта</label>
         <input
@@ -56,7 +76,9 @@
 
       <!-- ПОДТВЕРЖДЕНИЕ ПОЧТЫ -->
       <form id="email-verify-form" class="hidden">
-        <p class="muted">Мы отправили письмо с кодом подтверждения на:</p>
+        <p class="muted">
+          Мы отправили письмо с кодом подтверждения на:
+        </p>
         <b id="verify-email"></b>
 
         <label for="verification-code">Код из письма</label>
@@ -99,24 +121,44 @@
         <div class="mini-logo">N</div>
         <span>NOLINK</span>
 
-        <button id="select-chats" class="icon-btn" type="button"
-          title="Выбрать чаты" aria-label="Выбрать чаты">☑</button>
+        <button
+          id="select-chats"
+          class="icon-btn"
+          type="button"
+          title="Выбрать чаты"
+          aria-label="Выбрать чаты"
+        >☑</button>
 
-        <button id="new-chat" class="icon-btn" type="button"
-          title="Новый чат" aria-label="Новый чат">＋</button>
+        <button
+          id="new-chat"
+          class="icon-btn"
+          type="button"
+          title="Новый чат"
+          aria-label="Новый чат"
+        >＋</button>
       </div>
 
       <div class="search-wrap">
-        <input id="search" placeholder="Поиск чатов" aria-label="Поиск чатов">
+        <input
+          id="search"
+          placeholder="Поиск чатов"
+          aria-label="Поиск чатов"
+        >
       </div>
 
       <div id="selection-toolbar" class="selection-toolbar hidden">
-        <button id="select-all-chats" type="button">Выбрать все</button>
+        <button id="select-all-chats" type="button">
+          Выбрать все
+        </button>
         <button id="delete-selected" class="danger" type="button">
           Удалить выбранные
         </button>
-        <button id="cancel-selection" type="button"
-          title="Завершить выбор" aria-label="Завершить выбор">×</button>
+        <button
+          id="cancel-selection"
+          type="button"
+          title="Завершить выбор"
+          aria-label="Завершить выбор"
+        >×</button>
       </div>
 
       <div class="section-label">СООБЩЕНИЯ</div>
@@ -127,6 +169,7 @@
 
         <div class="profile-info">
           <b id="my-name">Пользователь</b>
+          <small id="my-nolink-id">@nolink</small>
           <small>В сети</small>
         </div>
 
@@ -139,8 +182,13 @@
           aria-label="Управление галочками"
         >✓</button>
 
-        <button id="logout" class="icon-btn" type="button"
-          title="Выйти" aria-label="Выйти">↪</button>
+        <button
+          id="logout"
+          class="icon-btn"
+          type="button"
+          title="Выйти"
+          aria-label="Выйти"
+        >↪</button>
       </div>
     </aside>
 
@@ -183,11 +231,20 @@
             hidden
           >
 
-          <button id="photo-button" class="photo-button" type="button"
-            title="Добавить фотографию" aria-label="Добавить фотографию">📷</button>
+          <button
+            id="photo-button"
+            class="photo-button"
+            type="button"
+            title="Добавить фотографию"
+            aria-label="Добавить фотографию"
+          >📷</button>
 
-          <button class="send-btn" type="submit"
-            title="Отправить сообщение" aria-label="Отправить сообщение">➤</button>
+          <button
+            class="send-btn"
+            type="submit"
+            title="Отправить сообщение"
+            aria-label="Отправить сообщение"
+          >➤</button>
         </form>
       </section>
     </main>
@@ -196,28 +253,49 @@
   <!-- ОКНО СОЗДАНИЯ ЧАТА -->
   <div id="modal" class="modal hidden">
     <div class="modal-card">
-      <button id="modal-close" class="modal-close" type="button"
-        title="Закрыть" aria-label="Закрыть">×</button>
+      <button
+        id="modal-close"
+        class="modal-close"
+        type="button"
+        title="Закрыть"
+        aria-label="Закрыть"
+      >×</button>
 
       <h2>Новый чат</h2>
-      <p class="muted">Найди пользователя по имени или создай группу.</p>
+      <p class="muted">
+        Найди пользователя по имени или NOLINK ID.
+      </p>
 
       <div class="tabs">
-        <button class="tab active" data-tab="direct" type="button">Личный чат</button>
-        <button class="tab" data-tab="group" type="button">Группа</button>
+        <button class="tab active" data-tab="direct" type="button">
+          Личный чат
+        </button>
+        <button class="tab" data-tab="group" type="button">
+          Группа
+        </button>
       </div>
 
       <div id="direct-panel">
-        <input id="user-search" placeholder="Имя пользователя"
-          aria-label="Поиск пользователя">
+        <input
+          id="user-search"
+          placeholder="Имя пользователя или @ID"
+          aria-label="Поиск пользователя"
+          autocomplete="off"
+        >
         <div id="user-results" class="user-results"></div>
       </div>
 
       <div id="group-panel" class="hidden">
-        <input id="group-name" placeholder="Название группы"
-          aria-label="Название группы">
-        <input id="group-members" placeholder="Имена участников через запятую"
-          aria-label="Участники группы">
+        <input
+          id="group-name"
+          placeholder="Название группы"
+          aria-label="Название группы"
+        >
+        <input
+          id="group-members"
+          placeholder="Имена или @ID через запятую"
+          aria-label="Участники группы"
+        >
         <button id="create-group" class="primary full" type="button">
           Создать группу
         </button>
@@ -230,16 +308,29 @@
   <!-- ОКНО УДАЛЕНИЯ ЧАТОВ -->
   <div id="delete-modal" class="modal hidden">
     <div class="modal-card">
-      <button id="delete-cancel" class="modal-close" type="button"
-        title="Закрыть" aria-label="Закрыть">×</button>
+      <button
+        id="delete-cancel"
+        class="modal-close"
+        type="button"
+        title="Закрыть"
+        aria-label="Закрыть"
+      >×</button>
 
       <h2>Удаление чатов</h2>
-      <p class="muted">Выбери, как удалить выбранные чаты.</p>
+      <p class="muted">
+        Выбери, как удалить выбранные чаты.
+      </p>
 
       <div class="delete-options">
-        <button id="delete-me" type="button">Удалить только у меня</button>
-        <button id="delete-everyone" type="button">Удалить у всех</button>
-        <button id="delete-cancel-bottom" type="button">Отмена</button>
+        <button id="delete-me" type="button">
+          Удалить только у меня
+        </button>
+        <button id="delete-everyone" type="button">
+          Удалить у всех
+        </button>
+        <button id="delete-cancel-bottom" type="button">
+          Отмена
+        </button>
       </div>
 
       <div id="delete-error" class="error"></div>
@@ -265,7 +356,7 @@
       <input
         id="badge-user-search"
         type="text"
-        placeholder="Введи имя пользователя"
+        placeholder="Имя пользователя или @ID"
         autocomplete="off"
         aria-label="Поиск пользователя для галочки"
       >

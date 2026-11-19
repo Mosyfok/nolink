@@ -52,6 +52,22 @@ function showAuth() {
   $("app").classList.add("hidden");
 }
 
+function normalizeNolinkId(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^@/, "")
+    .toLowerCase();
+}
+
+function isValidNolinkId(value) {
+  return /^[a-z0-9]{3,8}$/.test(normalizeNolinkId(value));
+}
+
+function formatNolinkId(value) {
+  const id = normalizeNolinkId(value);
+  return id ? `@${id}` : "";
+}
+
 function showApp() {
   $("auth").classList.add("hidden");
   $("app").classList.remove("hidden");
@@ -60,7 +76,17 @@ function showApp() {
   $("my-avatar").textContent =
     currentUser.username.charAt(0).toUpperCase();
 
-  renderVerifiedName($("my-name"), currentUser.username, currentUser.isVerified);
+  renderVerifiedName(
+    $("my-name"),
+    currentUser.username,
+    currentUser.isVerified
+  );
+
+  const myNolinkId = $("my-nolink-id");
+
+  if (myNolinkId) {
+    myNolinkId.textContent = formatNolinkId(currentUser.nolinkId);
+  }
 }
 
 function renderVerifiedName(element, username, isVerified) {
@@ -99,6 +125,28 @@ function getOtherMember(chat) {
 
 function escapeText(value) {
   return String(value ?? "");
+}
+
+function createUserLabel(user) {
+  const container = document.createElement("span");
+
+  const username = document.createElement("span");
+  renderVerifiedName(
+    username,
+    user.username,
+    user.isVerified
+  );
+
+  container.appendChild(username);
+
+  if (user.nolinkId) {
+    const id = document.createElement("small");
+    id.className = "user-nolink-id";
+    id.textContent = formatNolinkId(user.nolinkId);
+    container.appendChild(id);
+  }
+
+  return container;
 }
 
 // Проверка прав администратора галочек
@@ -143,6 +191,24 @@ function setAuthMode(mode) {
   $("username").classList.toggle("hidden", !registerMode);
   $("username-label").classList.toggle("hidden", !registerMode);
 
+  const nolinkId = $("nolink-id");
+  const nolinkIdLabel = $("nolink-id-label");
+  const nolinkIdHint = $("nolink-id-hint");
+
+  if (nolinkId) {
+    nolinkId.classList.toggle("hidden", !registerMode);
+    nolinkId.required = registerMode;
+    nolinkId.value = "";
+  }
+
+  if (nolinkIdLabel) {
+    nolinkIdLabel.classList.toggle("hidden", !registerMode);
+  }
+
+  if (nolinkIdHint) {
+    nolinkIdHint.classList.toggle("hidden", !registerMode);
+  }
+
   $("username").required = registerMode;
   $("password").autocomplete = registerMode
     ? "new-password"
@@ -186,6 +252,19 @@ $("auth-form").addEventListener("submit", async event => {
 
     if (registerMode) {
       body.username = $("username").value.trim();
+
+      const enteredId = $("nolink-id").value;
+      const normalizedId = normalizeNolinkId(enteredId);
+
+      if (!isValidNolinkId(enteredId)) {
+        showError(
+          "auth-error",
+          "NOLINK ID должен содержать от 3 до 8 латинских букв или цифр."
+        );
+        return;
+      }
+
+      body.nolinkId = `@${normalizedId}`;
     }
 
     const result = await api(path, {
@@ -958,7 +1037,8 @@ async function searchUsers() {
     for (const user of users) {
       const button = document.createElement("button");
       button.className = "user-result";
-      renderVerifiedName(button, user.username, user.isVerified);
+
+      button.appendChild(createUserLabel(user));
 
       button.addEventListener("click", async () => {
         try {
@@ -1071,8 +1151,7 @@ async function searchBadgeUsers() {
       const row = document.createElement("div");
       row.className = "user-result";
 
-      const name = document.createElement("span");
-      renderVerifiedName(name, user.username, user.isVerified);
+      const name = createUserLabel(user);
 
       const button = document.createElement("button");
       button.type = "button";
@@ -1099,11 +1178,8 @@ async function searchBadgeUsers() {
 
           user.isVerified = !user.isVerified;
 
-          renderVerifiedName(
-            name,
-            user.username,
-            user.isVerified
-          );
+          const updatedName = createUserLabel(user);
+          name.replaceWith(updatedName);
 
           button.textContent = user.isVerified
             ? "Снять галочку"
