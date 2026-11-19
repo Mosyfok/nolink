@@ -1,4 +1,3 @@
-
 const base = "https://nolink.onrender.com";
 
 let token = localStorage.getItem("nolink-token");
@@ -538,7 +537,7 @@ function setReply(message) {
 
   replyToMessage = message;
 
-  const author = message.userId === currentUser.id
+  const author = String(message.userId) === String(currentUser.id)
     ? "Вы"
     : (message.username || "Пользователь");
 
@@ -558,10 +557,10 @@ function setReply(message) {
    ========================================================= */
 
 function getReadStatus(message) {
-  if (message.userId !== currentUser.id) return "";
+  if (String(message.userId) !== String(currentUser.id)) return "";
 
   const readers = (message.readBy || []).filter(
-    item => item.userId !== currentUser.id
+    item => String(item.userId) !== String(currentUser.id)
   );
 
   if (!readers.length) return "✓ Отправлено";
@@ -650,22 +649,26 @@ function connectSocket() {
   // Повторно присоединяемся к открытому чату после переподключения.
   socket.on("connect", () => {
     if (activeChat?.id) {
-      socket.emit("chat:join", activeChat.id);
-      socket.emit("chat:read", activeChat.id);
+      const chatId = String(activeChat.id);
+
+      socket.emit("chat:join", chatId);
+      socket.emit("chat:read", chatId);
     }
   });
 
   socket.on("presence:snapshot", userIds => {
-    const online = new Set(Array.isArray(userIds) ? userIds : []);
+    const online = new Set(
+      (Array.isArray(userIds) ? userIds : []).map(String)
+    );
 
     for (const chat of chats) {
       for (const member of chat.members || []) {
-        member.isOnline = online.has(member.id);
+        member.isOnline = online.has(String(member.id));
       }
     }
 
     if (currentUser) {
-      currentUser.isOnline = online.has(currentUser.id);
+      currentUser.isOnline = online.has(String(currentUser.id));
     }
 
     if ($("my-presence")) {
@@ -686,7 +689,9 @@ function connectSocket() {
   socket.on("message:new", message => {
     if (!message) return;
 
-    const chat = chats.find(item => item.id === message.chatId);
+    const chat = chats.find(
+      item => String(item.id) === String(message.chatId)
+    );
 
     if (chat) {
       chat.lastMessage = message;
@@ -694,14 +699,14 @@ function connectSocket() {
 
     renderChats();
 
-    if (activeChat?.id === message.chatId) {
+    if (activeChat && String(activeChat.id) === String(message.chatId)) {
       appendMessage(message);
 
       if (
-        message.userId !== currentUser.id &&
+        String(message.userId) !== String(currentUser.id) &&
         socket?.connected
       ) {
-        socket.emit("chat:read", message.chatId);
+        socket.emit("chat:read", String(message.chatId));
       }
     }
   });
@@ -729,7 +734,9 @@ function connectSocket() {
         ? [...message.readBy]
         : [];
 
-      if (!readBy.some(item => item.userId === data.userId)) {
+      if (!readBy.some(
+        item => String(item.userId) === String(data.userId)
+      )) {
         readBy.push({
           userId: data.userId,
           readAt: data.readAt
@@ -743,32 +750,49 @@ function connectSocket() {
   socket.on("message:updated", message => {
     if (!message) return;
 
-    const chat = chats.find(item => item.id === message.chatId);
+    const chat = chats.find(
+      item => String(item.id) === String(message.chatId)
+    );
 
-    if (chat?.lastMessage?.id === message.id) {
+    if (
+      chat?.lastMessage &&
+      String(chat.lastMessage.id) === String(message.id)
+    ) {
       chat.lastMessage = message;
       renderChats();
     }
 
-    if (activeChat?.id === message.chatId) {
+    if (
+      activeChat &&
+      String(activeChat.id) === String(message.chatId)
+    ) {
       replaceMessage(message);
     }
   });
 
+  // ИСПРАВЛЕННЫЙ ОБРАБОТЧИК СТАТУСА «ПЕЧАТАЕТ…»
   socket.on("typing:update", data => {
-    if (!data || !activeChat || data.chatId !== activeChat.id) {
+    if (!data || !activeChat || !currentUser) return;
+
+    // Сравниваем ID как строки, чтобы не было несовпадения типов.
+    if (String(data.chatId) !== String(activeChat.id)) {
       return;
     }
 
-    if (data.userId === currentUser.id) return;
+    // Не показываем собственный статус печати.
+    if (String(data.userId) === String(currentUser.id)) {
+      return;
+    }
 
-    if (data.isTyping) {
+    const typingUserId = String(data.userId);
+
+    if (data.isTyping === true) {
       typingUsers.set(
-        data.userId,
+        typingUserId,
         data.username || "Пользователь"
       );
     } else {
-      typingUsers.delete(data.userId);
+      typingUsers.delete(typingUserId);
     }
 
     renderTypingIndicator();
@@ -779,13 +803,20 @@ function connectSocket() {
   });
 
   socket.on("chat:deleted", ({ chatId }) => {
-    chats = chats.filter(chat => chat.id !== chatId);
+    chats = chats.filter(
+      chat => String(chat.id) !== String(chatId)
+    );
+
     selectedChats.delete(chatId);
 
-    if (activeChat?.id === chatId) {
+    if (
+      activeChat &&
+      String(activeChat.id) === String(chatId)
+    ) {
       stopTyping();
       activeChat = null;
       typingUsers.clear();
+      renderTypingIndicator();
       clearReply();
 
       $("conversation").classList.add("hidden");
@@ -803,17 +834,20 @@ function connectSocket() {
 
     for (const chat of chats) {
       for (const member of chat.members || []) {
-        if (member.id === userId) {
+        if (String(member.id) === String(userId)) {
           member.isVerified = data.isVerified === true;
         }
       }
 
-      if (chat.lastMessage?.userId === userId) {
+      if (
+        chat.lastMessage &&
+        String(chat.lastMessage.userId) === String(userId)
+      ) {
         chat.lastMessage.isVerified = data.isVerified === true;
       }
     }
 
-    if (currentUser.id === userId) {
+    if (String(currentUser.id) === String(userId)) {
       currentUser.isVerified = data.isVerified === true;
 
       renderVerifiedName(
@@ -827,7 +861,7 @@ function connectSocket() {
 
     if (activeChat) {
       const updatedChat = chats.find(
-        chat => chat.id === activeChat.id
+        chat => String(chat.id) === String(activeChat.id)
       );
 
       if (updatedChat) {
@@ -845,13 +879,13 @@ function connectSocket() {
 function setUserPresence(userId, isOnline) {
   for (const chat of chats) {
     for (const member of chat.members || []) {
-      if (member.id === userId) {
+      if (String(member.id) === String(userId)) {
         member.isOnline = isOnline === true;
       }
     }
   }
 
-  if (currentUser?.id === userId) {
+  if (currentUser && String(currentUser.id) === String(userId)) {
     currentUser.isOnline = isOnline === true;
 
     const label = isOnline ? "В сети" : "Не в сети";
@@ -862,7 +896,10 @@ function setUserPresence(userId, isOnline) {
     }
   }
 
-  if (activeChat && getOtherMember(activeChat)?.id === userId) {
+  if (
+    activeChat &&
+    String(getOtherMember(activeChat)?.id) === String(userId)
+  ) {
     updateActiveChatSubtitle();
   }
 
@@ -875,7 +912,7 @@ function chatName(chat) {
   }
 
   const other = (chat.members || []).find(
-    member => member.id !== currentUser.id
+    member => String(member.id) !== String(currentUser.id)
   );
 
   return other?.username || "Личный чат";
@@ -885,7 +922,7 @@ function getOtherMember(chat) {
   if (!chat || chat.type === "group") return null;
 
   return (chat.members || []).find(
-    member => member.id !== currentUser.id
+    member => String(member.id) !== String(currentUser.id)
   ) || null;
 }
 
@@ -924,7 +961,9 @@ function startTyping() {
 
   if (!isTyping) {
     isTyping = true;
-    socket.emit("typing:start", activeChat.id);
+
+    // Всегда отправляем ID чата строкой.
+    socket.emit("typing:start", String(activeChat.id));
   }
 
   clearTimeout(typingTimer);
@@ -939,7 +978,7 @@ function stopTyping() {
   typingTimer = null;
 
   if (isTyping && activeChat && socket?.connected) {
-    socket.emit("typing:stop", activeChat.id);
+    socket.emit("typing:stop", String(activeChat.id));
   }
 
   isTyping = false;
@@ -1004,7 +1043,10 @@ function renderChats() {
     const item = document.createElement("div");
     item.className = "chat-item";
 
-    if (activeChat?.id === chat.id) {
+    if (
+      activeChat &&
+      String(activeChat.id) === String(chat.id)
+    ) {
       item.classList.add("active");
     }
 
@@ -1193,13 +1235,20 @@ async function deleteChats(mode) {
         body: JSON.stringify({ mode })
       });
 
-      chats = chats.filter(chat => chat.id !== chatId);
+      chats = chats.filter(
+        chat => String(chat.id) !== String(chatId)
+      );
+
       selectedChats.delete(chatId);
 
-      if (activeChat?.id === chatId) {
+      if (
+        activeChat &&
+        String(activeChat.id) === String(chatId)
+      ) {
         stopTyping();
         activeChat = null;
         typingUsers.clear();
+        renderTypingIndicator();
         clearReply();
 
         $("conversation").classList.add("hidden");
@@ -1235,7 +1284,10 @@ $("delete-everyone").addEventListener("click", () => {
    ========================================================= */
 
 async function openChat(chat) {
-  if (activeChat?.id !== chat.id) {
+  if (
+    !activeChat ||
+    String(activeChat.id) !== String(chat.id)
+  ) {
     stopTyping();
     typingUsers.clear();
     renderTypingIndicator();
@@ -1262,7 +1314,7 @@ async function openChat(chat) {
   $("messages").replaceChildren();
 
   if (socket?.connected) {
-    socket.emit("chat:join", chat.id);
+    socket.emit("chat:join", String(chat.id));
   }
 
   renderChats();
@@ -1272,19 +1324,30 @@ async function openChat(chat) {
       `/api/chats/${encodeURIComponent(chat.id)}/messages`
     );
 
-    if (activeChat?.id !== chat.id) return;
+    if (
+      !activeChat ||
+      String(activeChat.id) !== String(chat.id)
+    ) {
+      return;
+    }
 
     $("messages").replaceChildren();
 
     for (const message of messages) {
-      if (activeChat?.id !== chat.id) return;
+      if (
+        !activeChat ||
+        String(activeChat.id) !== String(chat.id)
+      ) {
+        return;
+      }
+
       appendMessage(message);
     }
 
     scrollMessagesToBottom();
 
     if (socket?.connected) {
-      socket.emit("chat:read", chat.id);
+      socket.emit("chat:read", String(chat.id));
     }
   } catch (err) {
     console.error("Ошибка загрузки сообщений:", err);
@@ -1302,14 +1365,14 @@ function createMessageElement(message) {
   wrapper.dataset.message = JSON.stringify(message);
   wrapper.dataset.readBy = JSON.stringify(message.readBy || []);
 
-  if (message.userId === currentUser.id) {
+  if (String(message.userId) === String(currentUser.id)) {
     wrapper.classList.add("mine");
   }
 
   const author = document.createElement("b");
   author.className = "message-author";
 
-  if (message.userId === currentUser.id) {
+  if (String(message.userId) === String(currentUser.id)) {
     renderVerifiedName(author, "Вы", currentUser.isVerified);
   } else {
     renderVerifiedName(
@@ -1419,7 +1482,7 @@ function createMessageElement(message) {
     wrapper.appendChild(edited);
   }
 
-  if (message.userId === currentUser.id) {
+  if (String(message.userId) === String(currentUser.id)) {
     const status = document.createElement("small");
     status.className = "message-status";
     status.textContent = getReadStatus(message);
@@ -1441,7 +1504,7 @@ function createMessageElement(message) {
   }
 
   if (
-    message.userId === currentUser.id &&
+    String(message.userId) === String(currentUser.id) &&
     !message.deletedAt
   ) {
     if (!message.attachmentId) {
@@ -1558,7 +1621,7 @@ function editMessage(message) {
     socket.emit(
       "message:edit",
       {
-        chatId: activeChat.id,
+        chatId: String(activeChat.id),
         messageId: message.id,
         content: newContent
       },
@@ -1606,7 +1669,7 @@ function deleteMessage(message) {
   socket.emit(
     "message:delete",
     {
-      chatId: activeChat.id,
+      chatId: String(activeChat.id),
       messageId: message.id
     },
     (error, updated) => {
@@ -1627,7 +1690,13 @@ function deleteMessage(message) {
    ========================================================= */
 
 function replaceMessage(message) {
-  if (!message || activeChat?.id !== message.chatId) return;
+  if (
+    !message ||
+    !activeChat ||
+    String(activeChat.id) !== String(message.chatId)
+  ) {
+    return;
+  }
 
   const old = [...$("messages").querySelectorAll("[data-message-id]")]
     .find(element =>
@@ -1642,9 +1711,14 @@ function replaceMessage(message) {
     $("messages").appendChild(replacement);
   }
 
-  const chat = chats.find(item => item.id === message.chatId);
+  const chat = chats.find(
+    item => String(item.id) === String(message.chatId)
+  );
 
-  if (chat?.lastMessage?.id === message.id) {
+  if (
+    chat?.lastMessage &&
+    String(chat.lastMessage.id) === String(message.id)
+  ) {
     chat.lastMessage = message;
     renderChats();
   }
@@ -1681,7 +1755,7 @@ $("send-form").addEventListener("submit", event => {
     return;
   }
 
-  const chatId = activeChat.id;
+  const chatId = String(activeChat.id);
   const replyToMessageId = replyToMessage?.id || null;
 
   $("message-input").value = "";
@@ -1704,7 +1778,9 @@ $("send-form").addEventListener("submit", event => {
       clearReply();
 
       if (sentMessage) {
-        const chat = chats.find(item => item.id === chatId);
+        const chat = chats.find(
+          item => String(item.id) === String(chatId)
+        );
 
         if (chat) {
           chat.lastMessage = sentMessage;
@@ -1754,7 +1830,7 @@ $("photo-input").addEventListener("change", async () => {
 
   if (!activeChat) return;
 
-  const chatId = activeChat.id;
+  const chatId = String(activeChat.id);
 
   try {
     const dataUrl = await blobToDataUrl(file);
@@ -1840,7 +1916,10 @@ async function searchUsers() {
           await loadChats();
           closeNewChatModal();
 
-          const found = chats.find(item => item.id === chat.id);
+          const found = chats.find(
+            item => String(item.id) === String(chat.id)
+          );
+
           if (found) await openChat(found);
         } catch (err) {
           showError("modal-error", err.message);
@@ -1886,7 +1965,10 @@ $("create-group").addEventListener("click", async () => {
     await loadChats();
     closeNewChatModal();
 
-    const found = chats.find(item => item.id === chat.id);
+    const found = chats.find(
+      item => String(item.id) === String(chat.id)
+    );
+
     if (found) await openChat(found);
   } catch (err) {
     showError("modal-error", err.message);
@@ -1982,7 +2064,7 @@ async function searchBadgeUsers() {
 
           if (activeChat) {
             const updatedChat = chats.find(
-              chat => chat.id === activeChat.id
+              chat => String(chat.id) === String(activeChat.id)
             );
 
             if (updatedChat) {
