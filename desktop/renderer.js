@@ -1185,11 +1185,16 @@ $("select-chats").addEventListener("click", () => {
   renderChats();
 });
 
-$("cancel-selection").addEventListener("click", () => {
-  selectionMode = false;
-  selectedChats.clear();
-  renderChats();
-});
+/* ИСПРАВЛЕНО: кнопки может не быть в index.html */
+const cancelSelectionButton = $("cancel-selection");
+
+if (cancelSelectionButton) {
+  cancelSelectionButton.addEventListener("click", () => {
+    selectionMode = false;
+    selectedChats.clear();
+    renderChats();
+  });
+}
 
 $("select-all-chats").addEventListener("click", () => {
   const query = $("search").value.trim().toLowerCase();

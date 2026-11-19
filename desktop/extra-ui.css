@@ -1,0 +1,151 @@
+
+/* NOLINK ID — белое облачко */
+#my-nolink-id {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid #39445f;
+  border-radius: 20px;
+  background: #252d42;
+  color: #f2f4ff !important;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Аватар собеседника */
+.chat-avatar-clickable {
+  cursor: pointer;
+  transition: transform .18s ease, filter .18s ease;
+}
+
+.chat-avatar-clickable:hover {
+  filter: brightness(1.15);
+  transform: scale(1.05);
+}
+
+.chat-avatar-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* Полноэкранный просмотр фотографий */
+.photo-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 6, 12, .97);
+}
+
+.photo-viewer.hidden {
+  display: none !important;
+}
+
+.photo-viewer-close {
+  position: absolute;
+  z-index: 3;
+  top: 18px;
+  right: 22px;
+  width: 43px;
+  height: 43px;
+  border: 1px solid #41485e;
+  border-radius: 12px;
+  background: #202638;
+  color: white;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.photo-viewer-toolbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 9px;
+  min-height: 72px;
+  padding: 12px 75px 12px 15px;
+  border-bottom: 1px solid #30374b;
+  background: #141824;
+}
+
+.photo-viewer-toolbar button {
+  min-width: 40px;
+  min-height: 38px;
+  padding: 7px 12px;
+  border: 1px solid #394158;
+  border-radius: 9px;
+  background: #202638;
+  color: white;
+  font-size: 15px;
+}
+
+.photo-viewer-toolbar #photo-zoom-reset {
+  min-width: 65px;
+  font-size: 12px;
+}
+
+.photo-viewer-toolbar .photo-save-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-left: 8px;
+  padding: 8px 15px;
+  border-color: #7187ff;
+  background: #354577;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.photo-save-button span:first-child {
+  font-size: 19px;
+}
+
+.photo-viewer-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 20px;
+}
+
+#photo-viewer-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  transform: scale(1);
+  transform-origin: center center;
+  transition: transform .12s ease;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.message-image {
+  cursor: zoom-in;
+}
+
+@media (max-width: 600px) {
+  .photo-viewer-toolbar {
+    justify-content: flex-start;
+    padding-left: 12px;
+    gap: 6px;
+  }
+
+  .photo-viewer-toolbar .photo-save-button {
+    margin-left: 0;
+  }
+
+  .photo-viewer-stage {
+    padding: 8px;
+  }
+}

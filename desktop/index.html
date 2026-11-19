@@ -8,6 +8,7 @@
   <meta name="theme-color" content="#0c0e15">
   <title>NOLINK</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="extra-ui.css">
 </head>
 <body>
   <!-- АВТОРИЗАЦИЯ -->
@@ -153,12 +154,6 @@
         <button id="delete-selected" class="danger" type="button">
           Удалить выбранные
         </button>
-        <button
-          id="cancel-selection"
-          type="button"
-          title="Завершить выбор"
-          aria-label="Завершить выбор"
-        >×</button>
       </div>
 
       <div class="section-label">СООБЩЕНИЯ</div>
@@ -173,7 +168,6 @@
           <small id="my-presence">В сети</small>
         </div>
 
-        <!-- КНОПКА УПРАВЛЕНИЯ ГАЛОЧКАМИ -->
         <button
           id="profile-open"
           class="icon-btn"
@@ -214,7 +208,14 @@
       <!-- ОКНО ПЕРЕПИСКИ -->
       <section id="conversation" class="conversation hidden">
         <header class="chat-header">
-          <div class="avatar" id="chat-avatar">C</div>
+          <div
+            class="avatar chat-avatar-clickable"
+            id="chat-avatar"
+            title="Открыть профиль собеседника"
+            role="button"
+            tabindex="0"
+            aria-label="Открыть профиль собеседника"
+          >C</div>
           <div>
             <b id="chat-title">Чат</b>
             <small id="chat-subtitle">NOLINK</small>
@@ -411,8 +412,40 @@
     </div>
   </div>
 
+  <!-- ПОЛНОЭКРАННЫЙ ПРОСМОТР ФОТО -->
+  <div
+    id="photo-viewer"
+    class="photo-viewer hidden"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Просмотр фотографии"
+  >
+    <button
+      id="photo-viewer-close"
+      class="photo-viewer-close"
+      type="button"
+      title="Закрыть"
+      aria-label="Закрыть"
+    >×</button>
+
+    <div class="photo-viewer-toolbar">
+      <button id="photo-zoom-out" type="button" title="Уменьшить">−</button>
+      <button id="photo-zoom-reset" type="button" title="Сбросить масштаб">100%</button>
+      <button id="photo-zoom-in" type="button" title="Увеличить">＋</button>
+      <button id="photo-save" class="photo-save-button" type="button">
+        <span aria-hidden="true">↓</span>
+        <span>Сохранить</span>
+      </button>
+    </div>
+
+    <div id="photo-viewer-stage" class="photo-viewer-stage">
+      <img id="photo-viewer-image" alt="Просматриваемая фотография">
+    </div>
+  </div>
+
   <!-- СКРИПТЫ -->
   <script src="../node_modules/socket.io-client/dist/socket.io.min.js"></script>
   <script src="renderer.js"></script>
+  <script src="extra-ui.js"></script>
 </body>
 </html>
