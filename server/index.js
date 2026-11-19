@@ -43,58 +43,114 @@ pool.on("error", err => {
   console.error("PostgreSQL connection error:", err.message);
 });
 
-// Resend HTTPS API
+// Отправка письма через Gmail API
 async function sendVerificationEmail(email, code) {
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.MAIL_FROM || "NOLINK <onboarding@resend.dev>";
+  const clientId = process.env.GMAIL_CLIENT_ID;
+  const clientSecret = process.env.GMAIL_CLIENT_SECRET;
+  const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
+  const gmailUser = process.env.GMAIL_USER;
 
-  if (!apiKey) {
-    throw new Error("RESEND_API_KEY не добавлен на сервере");
+  if (!clientId || !clientSecret || !refreshToken || !gmailUser) {
+    throw new Error("Не все настройки Gmail API добавлены на сервере");
   }
 
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      from,
-      to: [email],
-      subject: "Код подтверждения NOLINK",
-      text:
-        `Добро пожаловать в NOLINK!\n\n` +
-        `Твой код подтверждения: ${code}\n\n` +
-        `Код действует ${CODE_LIFETIME_MINUTES} минут.\n` +
-        `Если ты не регистрировался в NOLINK, просто проигнорируй это письмо.`,
-      html: `
-        <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#222">
-          <h1 style="color:#5865f2">NOLINK</h1>
-          <h2>Подтверждение электронной почты</h2>
-          <p>Добро пожаловать в NOLINK!</p>
-          <p>Твой код подтверждения:</p>
-          <div style="font-size:32px;font-weight:bold;letter-spacing:8px;padding:16px 0">
-            ${code}
-          </div>
-          <p>Код действует ${CODE_LIFETIME_MINUTES} минут.</p>
-          <p style="color:#777;font-size:12px">
-            Если ты не регистрировался в NOLINK, проигнорируй это письмо.
-          </p>
-        </div>
-      `
-    })
-  });
+  // Получаем временный токен доступа
+  const tokenResponse = await fetch(
+    "https://oauth2.googleapis.com/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token"
+      })
+    }
+  );
+
+  const tokenData = await tokenResponse.json().catch(() => ({}));
+
+  if (!tokenResponse.ok || !tokenData.access_token) {
+    console.error("Google OAuth error:", tokenData);
+    throw new Error("Не удалось получить доступ к Gmail API");
+  }
+
+  const text =
+    `Добро пожаловать в NOLINK!\n\n` +
+    `Твой код подтверждения: ${code}\n\n` +
+    `Код действует ${CODE_LIFETIME_MINUTES} минут.\n` +
+    `Если ты не регистрировался в NOLINK, просто проигнорируй это письмо.`;
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;color:#222">
+      <h1 style="color:#5865f2">NOLINK</h1>
+      <h2>Подтверждение электронной почты</h2>
+      <p>Добро пожаловать в NOLINK!</p>
+      <p>Твой код подтверждения:</p>
+      <div style="font-size:32px;font-weight:bold;letter-spacing:8px;padding:16px 0">
+        ${code}
+      </div>
+      <p>Код действует ${CODE_LIFETIME_MINUTES} минут.</p>
+      <p style="color:#777;font-size:12px">
+        Если ты не регистрировался в NOLINK, проигнорируй это письмо.
+      </p>
+    </div>
+  `;
+
+  const boundary = `nolink_${randomUUID()}`;
+
+  const message = [
+    `From: NOLINK <${gmailUser}>`,
+    `To: ${email}`,
+    "Subject: Код подтверждения NOLINK",
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    Buffer.from(text, "utf8").toString("base64"),
+    `--${boundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    Buffer.from(html, "utf8").toString("base64"),
+    `--${boundary}--`,
+    ""
+  ].join("\r\n");
+
+  const raw = Buffer.from(message, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+
+  const response = await fetch(
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${tokenData.access_token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ raw })
+    }
+  );
 
   const result = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    console.error("Resend API error:", result);
+    console.error("Gmail API error:", result);
     throw new Error(
-      result.message || result.error || `Resend API error: ${response.status}`
+      result.error?.message || `Gmail API error: ${response.status}`
     );
   }
 
-  console.log("Verification email accepted by Resend:", result.id);
+  console.log("Verification email sent through Gmail API:", result.id);
 }
 
 function makeCodeHash(email, code) {
@@ -450,7 +506,7 @@ app.post("/api/auth/register", async (req, res) => {
       console.error("Email sending error:", mailError.message);
 
       return res.status(503).json({
-        error: "Не удалось отправить письмо. Проверь настройки Resend на сервере."
+        error: "Не удалось отправить письмо. Проверь настройки Gmail API на сервере."
       });
     }
 
@@ -960,7 +1016,7 @@ app.post("/api/chats/group", auth, async (req, res) => {
     }
 
     console.error("Create group error:", err);
-    res.status(500).json({ error: "Ошибка создания группы" });
+    res.status(500).json({ error: "Ошибка создания чата" });
   } finally {
     client.release();
   }
