@@ -1,4 +1,3 @@
-
 require("dotenv").config({
   path: require("path").resolve(__dirname, "../.env")
 });
@@ -907,6 +906,59 @@ app.post("/api/auth/login", async (req, res) => {
 // Текущий пользователь
 app.get("/api/me", auth, (req, res) => {
   res.json({ user: req.user });
+});
+
+// Однократное назначение NOLINK ID существующему аккаунту test
+app.patch("/api/me/nolink-id", auth, async (req, res) => {
+  try {
+    if (
+      String(req.user.username).trim().toLowerCase() !== "test"
+    ) {
+      return res.status(403).json({
+        error: "Эта операция доступна только аккаунту test"
+      });
+    }
+
+    if (req.user.nolinkId) {
+      return res.status(409).json({
+        error: `У аккаунта уже установлен NOLINK ID: @${req.user.nolinkId}`
+      });
+    }
+
+    const result = await pool.query(
+      `UPDATE users
+       SET nolink_id = $1
+       WHERE id = $2
+         AND nolink_id IS NULL
+       RETURNING id, username,
+                 nolink_id AS "nolinkId"`,
+      ["test123", req.user.id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(409).json({
+        error: "NOLINK ID уже установлен или аккаунт не найден"
+      });
+    }
+
+    res.json({
+      ok: true,
+      message: "NOLINK ID успешно установлен",
+      user: result.rows[0]
+    });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({
+        error: "ID @test123 уже занят другим аккаунтом"
+      });
+    }
+
+    console.error("NOLINK ID update error:", err);
+
+    res.status(500).json({
+      error: "Не удалось установить NOLINK ID"
+    });
+  }
 });
 
 // Проверка прав администратора галочек
