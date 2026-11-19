@@ -23,6 +23,13 @@ const CODE_LIFETIME_MINUTES = 10;
 const CODE_RESEND_SECONDS = 60;
 const MAX_CODE_ATTEMPTS = 5;
 
+// Только эти подтверждённые аккаунты могут управлять галочками.
+const BADGE_ADMIN_EMAILS = new Set([
+  "kirillgrechishkin2@gmail.com",
+  "kirillgreciskin326@gmail.com",
+  "standap238@gmail.com"
+]);
+
 if (!SECRET || SECRET.length < 24) {
   console.error("JWT_SECRET must contain at least 24 characters.");
   process.exit(1);
@@ -54,7 +61,6 @@ async function sendVerificationEmail(email, code) {
     throw new Error("Не все настройки Gmail API добавлены на сервере");
   }
 
-  // Получаем временный токен доступа
   const tokenResponse = await fetch(
     "https://oauth2.googleapis.com/token",
     {
@@ -184,6 +190,10 @@ async function initializeDatabase() {
       ADD COLUMN IF NOT EXISTS email_verified BOOLEAN
       NOT NULL DEFAULT FALSE;
 
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS is_verified BOOLEAN
+      NOT NULL DEFAULT FALSE;
+
     CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower
       ON users (LOWER(username));
 
@@ -278,6 +288,7 @@ async function getUser(id) {
   const result = await pool.query(
     `SELECT id, username, email,
             email_verified AS "emailVerified",
+            is_verified AS "isVerified",
             created_at AS "createdAt"
      FROM users
      WHERE id = $1`,
@@ -285,6 +296,16 @@ async function getUser(id) {
   );
 
   return result.rows[0] || null;
+}
+
+function isBadgeAdmin(user) {
+  return Boolean(
+    user &&
+    user.emailVerified === true &&
+    BADGE_ADMIN_EMAILS.has(
+      String(user.email || "").trim().toLowerCase()
+    )
+  );
 }
 
 async function isMember(chatId, userId) {
@@ -330,7 +351,8 @@ function auth(req, res, next) {
 function publicUser(user) {
   return {
     id: user.id,
-    username: user.username
+    username: user.username,
+    isVerified: user.isVerified === true
   };
 }
 
@@ -349,7 +371,8 @@ async function chatPayload(chatId) {
 
   const [membersResult, lastResult] = await Promise.all([
     pool.query(
-      `SELECT u.id, u.username
+      `SELECT u.id, u.username,
+              u.is_verified AS "isVerified"
        FROM users u
        JOIN members m ON m.user_id = u.id
        WHERE m.chat_id = $1
@@ -360,6 +383,7 @@ async function chatPayload(chatId) {
     pool.query(
       `SELECT m.id, m.chat_id AS "chatId",
               m.user_id AS "userId", u.username,
+              u.is_verified AS "isVerified",
               m.content, m.attachment_id AS "attachmentId",
               m.created_at AS "createdAt"
        FROM messages m
@@ -801,7 +825,98 @@ app.get("/api/me", auth, (req, res) => {
   res.json({ user: req.user });
 });
 
-// Поиск пользователей
+// Проверка прав администратора галочек
+app.get("/api/badges/admin", auth, (req, res) => {
+  res.json({
+    isAdmin: isBadgeAdmin(req.user)
+  });
+});
+
+// Поиск пользователей для меню управления галочками
+app.get("/api/badges/users", auth, async (req, res) => {
+  try {
+    if (!isBadgeAdmin(req.user)) {
+      return res.status(403).json({
+        error: "Нет прав для управления галочками"
+      });
+    }
+
+    const q = String(req.query.q || "").trim().slice(0, 30);
+
+    if (q.length < 2) {
+      return res.json([]);
+    }
+
+    const result = await pool.query(
+      `SELECT id, username,
+              is_verified AS "isVerified"
+       FROM users
+       WHERE username ILIKE $1
+       ORDER BY username
+       LIMIT 20`,
+      [`%${q}%`]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Badge user search error:", err);
+    res.status(500).json({
+      error: "Ошибка поиска пользователей"
+    });
+  }
+});
+
+// Выдать или снять галочку
+app.patch("/api/badges/users/:id", auth, async (req, res) => {
+  try {
+    if (!isBadgeAdmin(req.user)) {
+      return res.status(403).json({
+        error: "Нет прав для управления галочками"
+      });
+    }
+
+    if (typeof req.body?.verified !== "boolean") {
+      return res.status(400).json({
+        error: "Укажи true или false"
+      });
+    }
+
+    const result = await pool.query(
+      `UPDATE users
+       SET is_verified = $2
+       WHERE id = $1
+       RETURNING id, username,
+                 is_verified AS "isVerified"`,
+      [String(req.params.id), req.body.verified]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({
+        error: "Пользователь не найден"
+      });
+    }
+
+    const updatedUser = result.rows[0];
+
+    // Обновляем галочку у всех подключённых пользователей.
+    io.emit("user:badge-updated", {
+      userId: updatedUser.id,
+      isVerified: updatedUser.isVerified
+    });
+
+    res.json({
+      ok: true,
+      user: updatedUser
+    });
+  } catch (err) {
+    console.error("Badge update error:", err);
+    res.status(500).json({
+      error: "Не удалось изменить галочку"
+    });
+  }
+});
+
+// Обычный поиск пользователей
 app.get("/api/users", auth, async (req, res) => {
   try {
     const q = String(req.query.q || "").trim().slice(0, 30);
@@ -809,7 +924,8 @@ app.get("/api/users", auth, async (req, res) => {
     if (q.length < 2) return res.json([]);
 
     const result = await pool.query(
-      `SELECT id, username
+      `SELECT id, username,
+              is_verified AS "isVerified"
        FROM users
        WHERE username ILIKE $1 AND id <> $2
        ORDER BY username
@@ -1016,7 +1132,7 @@ app.post("/api/chats/group", auth, async (req, res) => {
     }
 
     console.error("Create group error:", err);
-    res.status(500).json({ error: "Ошибка создания чата" });
+    res.status(500).json({ error: "Ошибка создания группы" });
   } finally {
     client.release();
   }
@@ -1117,6 +1233,7 @@ app.get("/api/chats/:id/messages", auth, async (req, res) => {
     const result = await pool.query(
       `SELECT m.id, m.chat_id AS "chatId",
               m.user_id AS "userId", u.username,
+              u.is_verified AS "isVerified",
               m.content, m.attachment_id AS "attachmentId",
               m.created_at AS "createdAt"
        FROM messages m
@@ -1275,6 +1392,7 @@ app.post("/api/chats/:id/images", auth, async (req, res) => {
       chatId,
       userId: req.user.id,
       username: req.user.username,
+      isVerified: req.user.isVerified === true,
       content: "Фотография",
       attachmentId,
       createdAt: now
@@ -1382,6 +1500,7 @@ io.on("connection", socket => {
         chatId,
         userId: socket.user.id,
         username: socket.user.username,
+        isVerified: socket.user.isVerified === true,
         content,
         attachmentId: null,
         createdAt: new Date()

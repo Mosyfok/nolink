@@ -20,14 +20,15 @@
       <h2 id="auth-title">С возвращением</h2>
       <p class="muted">Войди или создай аккаунт, чтобы начать общаться.</p>
 
-      <!-- ВХОД И РЕГИСТРАЦИЯ -->
       <form id="auth-form">
         <label id="username-label" class="hidden" for="username">Имя пользователя</label>
         <input
           id="username"
           class="hidden"
           autocomplete="username"
-          placeholder="Например, alex"
+          placeholder="Например, Алекс"
+          minlength="3"
+          maxlength="20"
         >
 
         <label for="email">Электронная почта</label>
@@ -55,10 +56,7 @@
 
       <!-- ПОДТВЕРЖДЕНИЕ ПОЧТЫ -->
       <form id="email-verify-form" class="hidden">
-        <p class="muted">
-          Мы отправили письмо с кодом подтверждения на:
-        </p>
-
+        <p class="muted">Мы отправили письмо с кодом подтверждения на:</p>
         <b id="verify-email"></b>
 
         <label for="verification-code">Код из письма</label>
@@ -101,8 +99,11 @@
         <div class="mini-logo">N</div>
         <span>NOLINK</span>
 
-        <button id="select-chats" class="icon-btn" type="button" title="Выбрать чаты" aria-label="Выбрать чаты">☑</button>
-        <button id="new-chat" class="icon-btn" type="button" title="Новый чат" aria-label="Новый чат">＋</button>
+        <button id="select-chats" class="icon-btn" type="button"
+          title="Выбрать чаты" aria-label="Выбрать чаты">☑</button>
+
+        <button id="new-chat" class="icon-btn" type="button"
+          title="Новый чат" aria-label="Новый чат">＋</button>
       </div>
 
       <div class="search-wrap">
@@ -111,8 +112,11 @@
 
       <div id="selection-toolbar" class="selection-toolbar hidden">
         <button id="select-all-chats" type="button">Выбрать все</button>
-        <button id="delete-selected" class="danger" type="button">Удалить выбранные</button>
-        <button id="cancel-selection" type="button" title="Завершить выбор" aria-label="Завершить выбор">×</button>
+        <button id="delete-selected" class="danger" type="button">
+          Удалить выбранные
+        </button>
+        <button id="cancel-selection" type="button"
+          title="Завершить выбор" aria-label="Завершить выбор">×</button>
       </div>
 
       <div class="section-label">СООБЩЕНИЯ</div>
@@ -120,11 +124,23 @@
 
       <div class="profile">
         <div class="avatar" id="my-avatar">N</div>
+
         <div class="profile-info">
           <b id="my-name">Пользователь</b>
           <small>В сети</small>
         </div>
-        <button id="logout" class="icon-btn" type="button" title="Выйти" aria-label="Выйти">↪</button>
+
+        <!-- КНОПКА УПРАВЛЕНИЯ ГАЛОЧКАМИ -->
+        <button
+          id="badge-admin-button"
+          class="icon-btn hidden"
+          type="button"
+          title="Управление галочками"
+          aria-label="Управление галочками"
+        >✓</button>
+
+        <button id="logout" class="icon-btn" type="button"
+          title="Выйти" aria-label="Выйти">↪</button>
       </div>
     </aside>
 
@@ -134,7 +150,9 @@
         <div class="empty-logo">N</div>
         <h1>Добро пожаловать в NOLINK</h1>
         <p>Выбери чат слева или начни новую переписку.</p>
-        <button class="primary" id="empty-new" type="button">＋ Новый чат</button>
+        <button class="primary" id="empty-new" type="button">
+          ＋ Новый чат
+        </button>
       </div>
 
       <!-- ОКНО ПЕРЕПИСКИ -->
@@ -165,8 +183,11 @@
             hidden
           >
 
-          <button id="photo-button" class="photo-button" type="button" title="Добавить фотографию" aria-label="Добавить фотографию">📷</button>
-          <button class="send-btn" type="submit" title="Отправить сообщение" aria-label="Отправить сообщение">➤</button>
+          <button id="photo-button" class="photo-button" type="button"
+            title="Добавить фотографию" aria-label="Добавить фотографию">📷</button>
+
+          <button class="send-btn" type="submit"
+            title="Отправить сообщение" aria-label="Отправить сообщение">➤</button>
         </form>
       </section>
     </main>
@@ -175,7 +196,8 @@
   <!-- ОКНО СОЗДАНИЯ ЧАТА -->
   <div id="modal" class="modal hidden">
     <div class="modal-card">
-      <button id="modal-close" class="modal-close" type="button" title="Закрыть" aria-label="Закрыть">×</button>
+      <button id="modal-close" class="modal-close" type="button"
+        title="Закрыть" aria-label="Закрыть">×</button>
 
       <h2>Новый чат</h2>
       <p class="muted">Найди пользователя по имени или создай группу.</p>
@@ -186,14 +208,19 @@
       </div>
 
       <div id="direct-panel">
-        <input id="user-search" placeholder="Имя пользователя" aria-label="Поиск пользователя">
+        <input id="user-search" placeholder="Имя пользователя"
+          aria-label="Поиск пользователя">
         <div id="user-results" class="user-results"></div>
       </div>
 
       <div id="group-panel" class="hidden">
-        <input id="group-name" placeholder="Название группы" aria-label="Название группы">
-        <input id="group-members" placeholder="Имена участников через запятую" aria-label="Участники группы">
-        <button id="create-group" class="primary full" type="button">Создать группу</button>
+        <input id="group-name" placeholder="Название группы"
+          aria-label="Название группы">
+        <input id="group-members" placeholder="Имена участников через запятую"
+          aria-label="Участники группы">
+        <button id="create-group" class="primary full" type="button">
+          Создать группу
+        </button>
       </div>
 
       <div id="modal-error" class="error"></div>
@@ -203,7 +230,8 @@
   <!-- ОКНО УДАЛЕНИЯ ЧАТОВ -->
   <div id="delete-modal" class="modal hidden">
     <div class="modal-card">
-      <button id="delete-cancel" class="modal-close" type="button" title="Закрыть" aria-label="Закрыть">×</button>
+      <button id="delete-cancel" class="modal-close" type="button"
+        title="Закрыть" aria-label="Закрыть">×</button>
 
       <h2>Удаление чатов</h2>
       <p class="muted">Выбери, как удалить выбранные чаты.</p>
@@ -215,6 +243,35 @@
       </div>
 
       <div id="delete-error" class="error"></div>
+    </div>
+  </div>
+
+  <!-- ОКНО УПРАВЛЕНИЯ ГАЛОЧКАМИ -->
+  <div id="badge-modal" class="modal hidden">
+    <div class="modal-card">
+      <button
+        id="badge-modal-close"
+        class="modal-close"
+        type="button"
+        title="Закрыть"
+        aria-label="Закрыть"
+      >×</button>
+
+      <h2>Управление галочками</h2>
+      <p class="muted">
+        Найди пользователя, чтобы выдать или снять синюю галочку.
+      </p>
+
+      <input
+        id="badge-user-search"
+        type="text"
+        placeholder="Введи имя пользователя"
+        autocomplete="off"
+        aria-label="Поиск пользователя для галочки"
+      >
+
+      <div id="badge-user-results" class="user-results"></div>
+      <div id="badge-error" class="error"></div>
     </div>
   </div>
 

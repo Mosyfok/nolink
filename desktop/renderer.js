@@ -14,6 +14,9 @@ let registerMode = false;
 let verificationMode = false;
 let verificationEmail = "";
 
+let badgeAdmin = false;
+let badgeSearchTimer = null;
+
 const $ = id => document.getElementById(id);
 
 async function api(path, options = {}) {
@@ -56,6 +59,22 @@ function showApp() {
   $("my-name").textContent = currentUser.username;
   $("my-avatar").textContent =
     currentUser.username.charAt(0).toUpperCase();
+
+  renderVerifiedName($("my-name"), currentUser.username, currentUser.isVerified);
+}
+
+function renderVerifiedName(element, username, isVerified) {
+  element.replaceChildren();
+  element.appendChild(document.createTextNode(username || "Пользователь"));
+
+  if (isVerified === true) {
+    const badge = document.createElement("span");
+    badge.className = "verified-badge";
+    badge.textContent = "✓";
+    badge.title = "Подтверждённый аккаунт";
+    badge.setAttribute("aria-label", "Подтверждённый аккаунт");
+    element.appendChild(badge);
+  }
 }
 
 function chatName(chat) {
@@ -70,8 +89,34 @@ function chatName(chat) {
   return other?.username || "Личный чат";
 }
 
+function getOtherMember(chat) {
+  if (!chat || chat.type === "group") return null;
+
+  return (chat.members || []).find(
+    member => member.id !== currentUser.id
+  ) || null;
+}
+
 function escapeText(value) {
   return String(value ?? "");
+}
+
+// Проверка прав администратора галочек
+async function loadBadgeAdminStatus() {
+  badgeAdmin = false;
+  $("badge-admin-button").classList.add("hidden");
+
+  try {
+    const result = await api("/api/badges/admin");
+    badgeAdmin = result.isAdmin === true;
+
+    $("badge-admin-button").classList.toggle(
+      "hidden",
+      !badgeAdmin
+    );
+  } catch (err) {
+    console.error("Не удалось проверить права управления галочками:", err);
+  }
 }
 
 // Переключение формы входа и регистрации
@@ -249,6 +294,8 @@ $("resend-code").addEventListener("click", async () => {
 async function enterApp() {
   showApp();
   connectSocket();
+
+  await loadBadgeAdminStatus();
   await loadChats();
 }
 
@@ -294,6 +341,47 @@ function connectSocket() {
     }
 
     renderChats();
+  });
+
+  socket.on("user:badge-updated", async data => {
+    if (!data) return;
+
+    const userId = data.userId || data.id;
+
+    if (!userId) return;
+
+    for (const chat of chats) {
+      for (const member of chat.members || []) {
+        if (member.id === userId) {
+          member.isVerified = data.isVerified === true;
+        }
+      }
+
+      if (chat.lastMessage?.userId === userId) {
+        chat.lastMessage.isVerified = data.isVerified === true;
+      }
+    }
+
+    if (currentUser.id === userId) {
+      currentUser.isVerified = data.isVerified === true;
+      renderVerifiedName(
+        $("my-name"),
+        currentUser.username,
+        currentUser.isVerified
+      );
+    }
+
+    renderChats();
+
+    if (activeChat) {
+      const chatId = activeChat.id;
+      const updatedChat = chats.find(chat => chat.id === chatId);
+
+      if (updatedChat) {
+        activeChat = updatedChat;
+        await openChat(updatedChat);
+      }
+    }
   });
 }
 
@@ -390,7 +478,14 @@ function renderChats() {
 
     const title = document.createElement("b");
     title.className = "chat-item-title";
-    title.textContent = chatName(chat);
+
+    const other = getOtherMember(chat);
+
+    if (other) {
+      renderVerifiedName(title, other.username, other.isVerified);
+    } else {
+      title.textContent = chatName(chat);
+    }
 
     const time = document.createElement("small");
     time.className = "chat-item-time";
@@ -576,7 +671,14 @@ async function openChat(chat) {
   $("empty-state").classList.add("hidden");
   $("conversation").classList.remove("hidden");
 
-  $("chat-title").textContent = chatName(chat);
+  const other = getOtherMember(chat);
+
+  renderVerifiedName(
+    $("chat-title"),
+    chatName(chat),
+    other?.isVerified
+  );
+
   $("chat-avatar").textContent =
     chatName(chat).charAt(0).toUpperCase();
 
@@ -633,9 +735,20 @@ async function appendMessage(message) {
 
   const author = document.createElement("b");
   author.className = "message-author";
-  author.textContent = message.userId === currentUser.id
-    ? "Вы"
-    : message.username || "Пользователь";
+
+  if (message.userId === currentUser.id) {
+    renderVerifiedName(
+      author,
+      "Вы",
+      currentUser.isVerified
+    );
+  } else {
+    renderVerifiedName(
+      author,
+      message.username || "Пользователь",
+      message.isVerified
+    );
+  }
 
   const content = document.createElement("div");
   content.className = "message-content";
@@ -845,7 +958,7 @@ async function searchUsers() {
     for (const user of users) {
       const button = document.createElement("button");
       button.className = "user-result";
-      button.textContent = user.username;
+      renderVerifiedName(button, user.username, user.isVerified);
 
       button.addEventListener("click", async () => {
         try {
@@ -912,6 +1025,130 @@ $("create-group").addEventListener("click", async () => {
   }
 });
 
+// Окно управления галочками
+function openBadgeModal() {
+  if (!badgeAdmin) return;
+
+  $("badge-modal").classList.remove("hidden");
+  $("badge-user-search").value = "";
+  $("badge-user-results").replaceChildren();
+  showError("badge-error", "");
+  $("badge-user-search").focus();
+}
+
+function closeBadgeModal() {
+  $("badge-modal").classList.add("hidden");
+  $("badge-user-search").value = "";
+  $("badge-user-results").replaceChildren();
+  showError("badge-error", "");
+}
+
+$("badge-admin-button").addEventListener("click", openBadgeModal);
+$("badge-modal-close").addEventListener("click", closeBadgeModal);
+
+$("badge-user-search").addEventListener("input", () => {
+  clearTimeout(badgeSearchTimer);
+  badgeSearchTimer = setTimeout(searchBadgeUsers, 300);
+});
+
+async function searchBadgeUsers() {
+  if (!badgeAdmin) return;
+
+  const query = $("badge-user-search").value.trim();
+  const results = $("badge-user-results");
+
+  results.replaceChildren();
+  showError("badge-error", "");
+
+  if (query.length < 2) return;
+
+  try {
+    const users = await api(
+      `/api/badges/users?q=${encodeURIComponent(query)}`
+    );
+
+    for (const user of users) {
+      const row = document.createElement("div");
+      row.className = "user-result";
+
+      const name = document.createElement("span");
+      renderVerifiedName(name, user.username, user.isVerified);
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "primary";
+
+      button.textContent = user.isVerified
+        ? "Снять галочку"
+        : "Выдать галочку";
+
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        showError("badge-error", "");
+
+        try {
+          await api(
+            `/api/badges/users/${encodeURIComponent(user.id)}`,
+            {
+              method: "PATCH",
+              body: JSON.stringify({
+                verified: !user.isVerified
+              })
+            }
+          );
+
+          user.isVerified = !user.isVerified;
+
+          renderVerifiedName(
+            name,
+            user.username,
+            user.isVerified
+          );
+
+          button.textContent = user.isVerified
+            ? "Снять галочку"
+            : "Выдать галочку";
+
+          await loadChats();
+
+          if (activeChat) {
+            const updatedChat = chats.find(
+              chat => chat.id === activeChat.id
+            );
+
+            if (updatedChat) {
+              activeChat = updatedChat;
+              await openChat(updatedChat);
+            }
+          }
+
+          showError(
+            "badge-error",
+            user.isVerified
+              ? "Галочка выдана."
+              : "Галочка снята."
+          );
+        } catch (err) {
+          showError("badge-error", err.message);
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      row.append(name, button);
+      results.appendChild(row);
+    }
+
+    if (!users.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "Пользователи не найдены";
+      results.appendChild(empty);
+    }
+  } catch (err) {
+    showError("badge-error", err.message);
+  }
+}
+
 // Выход
 $("logout").addEventListener("click", () => {
   if (socket) socket.disconnect();
@@ -923,6 +1160,10 @@ $("logout").addEventListener("click", () => {
   activeChat = null;
   chats = [];
   selectedChats.clear();
+  badgeAdmin = false;
+
+  $("badge-admin-button").classList.add("hidden");
+  closeBadgeModal();
 
   setAuthMode(false);
   showAuth();
